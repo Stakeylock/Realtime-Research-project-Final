@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patient Details - {{ records[0].patient_id if records else 'Unknown' }}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <style>
+        body {
+            font-family: sans-serif;
+            margin: 0;
+            background-color: #f4f7f6;
+            color: #333;
+        }
+        header {
+            background-color: #007bff;
+            color: white;
+            padding: 20px 0;
+            text-align: center;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        header h1 {
+            margin: 0;
+            font-size: 2em;
+        }
+        nav {
+            margin-top: 10px;
+        }
+        nav a {
+            color: white;
+            margin: 0 15px;
+            text-decoration: none;
+            font-size: 1.1em;
+        }
+        nav a.active {
+            text-decoration: underline;
+            font-weight: bold;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 20px auto;
+            padding: 20px;
+            background-color: white;
+            border-radius: 8px;
+            box-shadow: 0 0 10px rgba(0,0,0,0.1);
+        }
+        .container h2 {
+            color: #007bff;
+            border-bottom: 2px solid #007bff;
+            padding-bottom: 10px;
+            margin-bottom: 20px;
+        }
+        .record-section {
+            margin-bottom: 30px;
+            padding: 20px;
+            border: 1px solid #e0e0e0;
+            border-radius: 5px;
+            background-color: #fdfdfd;
+        }
+        .record-section h3 {
+            color: #343a40;
+            margin-top: 0;
+            border-bottom: 1px solid #eee;
+            padding-bottom: 8px;
+        }
+        .record-details dt {
+            font-weight: bold;
+            color: #555;
+            margin-top: 10px;
+        }
+        .record-details dd {
+            margin-left: 20px;
+            margin-bottom: 10px;
+            color: #333;
+        }
+        .image-display {
+            max-width: 100%;
+            height: auto;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            margin-top: 10px;
+        }
+        .report-content {
+            white-space: pre-wrap; /* Preserve formatting of the report */
+            background-color: #f8f9fa;
+            padding: 15px;
+            border-radius: 4px;
+            border: 1px solid #e0e0e0;
+            max-height: 500px;
+            overflow-y: auto;
+        }
+        .back-link {
+            display: inline-block;
+            margin-bottom: 20px;
+            color: #007bff;
+            text-decoration: none;
+            font-size: 1em;
+        }
+        .back-link:hover {
+            text-decoration: underline;
+        }
+        footer {
+            text-align: center;
+            padding: 20px;
+            margin-top: 30px;
+            background-color: #343a40;
+            color: white;
+            font-size: 0.9em;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>Breast Cancer Risk Prediction Tool</h1>
+        <nav>
+            <a href="{{ url_for('index') }}">Home</a>
+            <a href="{{ url_for('patients_list') }}">Patient Records</a>
+        </nav>
+    </header>
+
+    <div class="container">
+        <a href="{{ url_for('patients_list') }}" class="back-link">&larr; Back to Patient List</a>
+        <h2>Patient Details: {{ records[0].patient_id if records else 'Unknown' }}</h2>
+
+        {% if records %}
+            {% for record in records %}
+                <div class="record-section">
+                    <h3>Record Type: {{ record.record_type }} ({{ record.created_at.strftime('%Y-%m-%d %H:%M') if record.created_at else 'N/A' }})</h3>
+                    <dl class="record-details">
+                        {% if record.record_type == 'Questionnaire' %}
+                            <dt>Name:</dt><dd>{{ record.data.name }}</dd>
+                            <dt>Age:</dt><dd>{{ record.data.age }}</dd>
+                            <dt>Gender:</dt><dd>{{ record.data.gender }}</dd>
+                            <!-- Add more questionnaire fields as needed -->
+                            <dt>Family History of Breast Cancer:</dt><dd>{{ record.data.familyHistoryBreastCancer }}</dd>
+                            <dt>BMI:</dt><dd>{{ record.data.bmi }}</dd>
+                        {% elif record.record_type == 'ImagePrediction' %}
+                            <dt>Overall Result:</dt><dd>{{ record.data.result_text }}</dd>
+                            <dt>Ensemble Probability:</dt><dd>{{ "%.4f"|format(record.data.ensemble_probability) if record.data.ensemble_probability is not none else 'N/A' }}</dd>
+                            <dt>Original Image:</dt>
+                            <dd>
+                                {% if record.data.original_image_path %}
+                                    <img src="{{ url_for('download_file', filepath=record.data.original_image_path) }}" alt="Original Image" class="image-display" style="max-width: 300px;">
+                                {% else %}
+                                    Not available
+                                {% endif %}
+                            </dd>
+                            <dt>Visualization Image:</dt>
+                            <dd>
+                                {% if record.data.visualization_image_path %}
+                                    <img src="{{ url_for('download_file', filepath=record.data.visualization_image_path) }}" alt="Visualization Image" class="image-display" style="max-width: 300px;">
+                                {% else %}
+                                    Not available
+                                {% endif %}
+                            </dd>
+                            <dt>Individual Model Predictions:</dt>
+                            <dd>
+                                <ul>
+                                {% for model, prob in record.data.model_predictions.items() %}
+                                    <li>{{ model }}: {{ "Cancer" if prob > 0.5 else "Normal" }} ({{ "%.4f"|format(prob) if prob is not none else 'N/A' }})</li>
+                                {% endfor %}
+                                </ul>
+                            </dd>
+                        {% elif record.record_type == 'GenePrediction' %}
+                            <dt>Predicted Class:</dt><dd>{{ record.data.predicted_class }}</dd>
+                            <dt>Probability:</dt><dd>{{ "%.4f"|format(record.data.probability) if record.data.probability is not none else 'N/A' }}</dd>
+                            <dt>Gene Data File:</dt>
+                            <dd>
+                                {% if record.data.gene_data_path %}
+                                    <a href="{{ url_for('download_file', filepath=record.data.gene_data_path) }}">{{ record.data.gene_data_path.split('/')[-1] }}</a>
+                                {% else %}
+                                    Not available
+                                {% endif %}
+                            </dd>
+                        {% elif record.record_type == 'LLMSummary' %}
+                            <dt>Report Content:</dt>
+                            <dd><pre class="report-content">{{ record.data.report_text }}</pre></dd>
+                            <dt>Generated Report File:</dt>
+                             <dd>
+                                {% if record.data.report_file_path %}
+                                    <a href="{{ url_for('download_file', filepath=record.data.report_file_path) }}">{{ record.data.report_file_path.split('/')[-1] }}</a>
+                                {% else %}
+                                    Not available
+                                {% endif %}
+                            </dd>
+                        {% else %}
+                            <dt>Data:</dt><dd>{{ record.data | tojson(indent=2) }}</dd>
+                        {% endif %}
+                    </dl>
+                </div>
+            {% endfor %}
+        {% else %}
+            <p>No records found for this patient.</p>
+        {% endif %}
+    </div>
+
+    <footer>
+        <p>Breast Cancer Risk Prediction Tool &copy; {{ now.year if now else '2024' }}</p>
+    </footer>
+</body>
+</html>

@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Distribution / packaging
+.Python
+build/
+dist/
+develop-eggs/
+*.egg-info/
+
+# PyInstaller
+*.spec
+
+# Environment
+.env
+
+# Database
+*.db
+*.sqlite3
+
+# Logs and temporary files
+*.log
+temp_images/
+temp_uploads/
+
+# Flask session files
+flask_sessions/
+
+# Large data files
+patient_data/
+gene_exp/
+GSE1000_series_matrix.txt
+
+# Generated output
+Output_Files/
+Visualizations.html
+infographic.html
+
+# Models
+models/
+RL_Models/
+
+# Executables
+*.exe

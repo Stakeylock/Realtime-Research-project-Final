@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Patient Records - Breast Cancer Risk Prediction Tool</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <style>
+        body {
+            font-family: sans-serif;
+            margin: 0;
+            background-color: #f4f7f6;
+            color: #333;
+        }
+        header {
+            background-color: #007bff; /* Professional blue */
+            color: white;
+            padding: 20px 0;
+            text-align: center;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        header h1 {
+            margin: 0;
+            font-size: 2em;
+        }
+        nav {
+            margin-top: 10px;
+        }
+        nav a {
+            color: white;
+            margin: 0 15px;
+            text-decoration: none;
+            font-size: 1.1em;
+        }
+        nav a.active {
+            text-decoration: underline;
+            font-weight: bold;
+        }
+        .patients-container {
+            max-width: 1000px;
+            margin: 20px auto;
+            padding: 20px;
+            background-color: white;
+            border-radius: 8px;
+            box-shadow: 0 0 10px rgba(0,0,0,0.1);
+        }
+        .patients-container h2 {
+            color: #007bff;
+            border-bottom: 2px solid #007bff;
+            padding-bottom: 10px;
+            margin-bottom: 20px;
+        }
+        .patient-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+        }
+        .patient-table th, .patient-table td {
+            padding: 12px 15px;
+            text-align: left;
+            border-bottom: 1px solid #ddd;
+        }
+        .patient-table th {
+            background-color: #e9ecef; /* Light grey for header */
+            font-weight: bold;
+            color: #495057;
+        }
+        .patient-table tr:hover {
+            background-color: #f8f9fa;
+        }
+        .patient-link {
+            color: #007bff;
+            text-decoration: none;
+            font-weight: 500;
+        }
+        .patient-link:hover {
+            text-decoration: underline;
+            color: #0056b3;
+        }
+        .new-patient-btn {
+            display: inline-block;
+            background-color: #28a745; /* Green for new action */
+            color: white;
+            padding: 10px 20px;
+            border-radius: 5px;
+            text-decoration: none;
+            margin-bottom: 20px;
+            font-size: 1em;
+            border: none;
+            cursor: pointer;
+        }
+        .new-patient-btn:hover {
+            background-color: #218838;
+        }
+        .db-stats {
+            margin-top: 30px;
+            padding: 15px;
+            background-color: #f8f9fa;
+            border: 1px solid #e0e0e0;
+            border-radius: 5px;
+        }
+        .db-stats h3 {
+            margin-top: 0;
+            color: #007bff;
+        }
+        .no-patients {
+            text-align: center;
+            padding: 20px;
+            color: #6c757d;
+        }
+        footer {
+            text-align: center;
+            padding: 20px;
+            margin-top: 30px;
+            background-color: #343a40;
+            color: white;
+            font-size: 0.9em;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>Breast Cancer Risk Prediction Tool</h1>
+        <nav>
+            <a href="{{ url_for('index') }}">Home</a>
+            <a href="{{ url_for('patients_list') }}" class="active">Patient Records</a>
+        </nav>
+    </header>
+
+    <div class="patients-container">
+        <h2>Patient Records Database</h2>
+        <a href="{{ url_for('index') }}" class="new-patient-btn">New Patient Assessment</a>
+
+        {% if patients %}
+        <table class="patient-table">
+            <thead>
+                <tr>
+                    <th>Patient ID</th>
+                    <th>Name</th>
+                    <th>Age</th>
+                    <th>Gender</th>
+                    <th>Date Created</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for patient in patients %}
+                <tr>
+                    <td>{{ patient.patient_id }}</td>
+                    <td>{{ patient.name }}</td>
+                    <td>{{ patient.age }}</td>
+                    <td>{{ patient.gender }}</td>
+                    <td>{{ patient.created_at.strftime('%Y-%m-%d %H:%M') if patient.created_at else 'N/A' }}</td>
+                    <td>
+                        <a href="{{ url_for('patient_details', patient_id=patient.patient_id) }}" class="patient-link">View Details</a>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <p class="no-patients">No patient records found in the database.</p>
+        {% endif %}
+
+        <div class="db-stats">
+            <h3>Database Statistics</h3>
+            <p>Total Patients: {{ patients|length if patients else 0 }}</p>
+            <!-- Add more stats here if needed -->
+        </div>
+    </div>
+
+    <footer>
+        <p>Breast Cancer Risk Prediction Tool &copy; {{ now.year if now else '2024' }}</p>
+    </footer>
+</body>
+</html>

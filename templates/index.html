@@ -161,9 +161,10 @@
 
         <section class="upload-section">
             <h2>Upload Mammogram Image</h2>
-            <p class="description">Upload a mammogram image for analysis. Supported formats: JPG, PNG.</p>
+            <p class="description">Upload a mammogram image for analysis. For validation, ensure the filename contains a label (e.g., 'image_benign.png', 'patientX_1.jpg'). Supported formats: JPG, PNG.</p>
             <input type="file" id="imageUpload" accept=".jpg, .jpeg, .png">
             <button id="predictButton">Predict</button>
+            <button id="validateButton" class="validate-button">Validate with Label</button>
         </section>
 
         <section class="gene-upload-section">
@@ -198,6 +199,19 @@
                 <h3>Individual Model Predictions</h3>
                 <div id="modelPredictionsContainer" class="predictions-grid">
                     <p class="placeholder-text">No individual predictions yet.</p>
+                </div>
+            </div>
+
+            <!-- NEW SECTION FOR VALIDATION RESULTS -->
+            <div id="validation-section" class="validation-container">
+                <h2>Model Validation Metrics</h2>
+                <p><strong>Ground Truth Label (from filename):</strong> <span id="true-label-display">Not Checked</span></p>
+                <div id="validation-results-output">
+                    <p class="placeholder-text">Upload an image with a label (e.g., 'image_benign.png') and click 'Validate with Label' to see metrics.</p>
+                </div>
+                <div id="metrics-comparison-graph" class="metrics-graph-container">
+                    <h3>Performance Comparison (Accuracy & F1-Score)</h3>
+                    <p class="placeholder-text">Graph will appear here after validation.</p>
                 </div>
             </div>
 

@@ -6,6 +6,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
     const imageUpload = document.getElementById('imageUpload');
     const predictButton = document.getElementById('predictButton');
+    const validateButton = document.getElementById('validateButton'); // NEW: Validation button
     const originalImagePlaceholder = document.getElementById('originalImagePlaceholder');
     const originalImage = document.getElementById('originalImage');
     const visualizationImagePlaceholder = document.getElementById('visualizationImagePlaceholder');
@@ -28,6 +29,13 @@ document.addEventListener('DOMContentLoaded', function () {
 
     const loadingSpinner = document.getElementById('loadingSpinner');
 
+    // NEW: Validation section elements
+    const validationSection = document.getElementById('validation-section');
+    const trueLabelDisplay = document.getElementById('true-label-display');
+    const validationResultsOutput = document.getElementById('validation-results-output');
+    const metricsComparisonGraph = document.getElementById('metrics-comparison-graph');
+
+
     // --- State Variables ---
     let currentPatientId = null;
     let currentQuestionnaireData = null;
@@ -35,6 +43,83 @@ document.addEventListener('DOMContentLoaded', function () {
     let currentGeneResults = null;
     let currentOriginalImageBase64 = null;
     let currentVisualizationImageBase64 = null;
+    let currentReportId = null; 
+
+    // UPDATED: Static Overall Metrics Baseline (from your provided data)
+    const OVERALL_METRICS_BASELINE = {
+        'LBP': { // Local Binary Pattern - Original Image
+            'accuracy': 0.486423,
+            'precision': 0.486423,
+            'recall': 0.486423,
+            'f1_score': 0.486423
+        },
+        'LBPN': { // Local Binary Pattern - Negative Transformer
+            'accuracy': 0.486423,
+            'precision': 0.486423,
+            'recall': 0.486423,
+            'f1_score': 0.486423
+        },
+        'LBPAHE': { // Local Binary Pattern - Adaptive Histogram Equalization
+            'accuracy': 0.486423,
+            'precision': 0.486423,
+            'recall': 0.486423,
+            'f1_score': 0.486423
+        },
+        'Sift': { // Scale Invariant Feature Transform (SIFT) - Original Image
+            'accuracy': 0.795750,
+            'precision': 0.795750,
+            'recall': 0.795750,
+            'f1_score': 0.795750
+        },
+        'SiftN': { // Scale Invariant Feature Transform (SIFT) - Negative Transformer
+            'accuracy': 0.684770,
+            'precision': 0.684770,
+            'recall': 0.684770,
+            'f1_score': 0.684770
+        },
+        'SiftAHE': { // Scale Invariant Feature Transform (SIFT) - Adaptive Histogram Equalization
+            'accuracy': 0.785124,
+            'precision': 0.785124,
+            'recall': 0.785124,
+            'f1_score': 0.785124
+        },
+        'Hog': { // Histogram of Oriented Gradients (HOG) - Original Image
+            'accuracy': 0.787485,
+            'precision': 0.787485,
+            'recall': 0.787485,
+            'f1_score': 0.787485
+        },
+        'HogN': { // Histogram of Oriented Gradients (HOG) - Negative Transformer
+            'accuracy': 0.775679,
+            'precision': 0.775679,
+            'recall': 0.775679,
+            'f1_score': 0.775679
+        },
+        'HogAHE': { // Histogram of Oriented Gradients (HOG) - Adaptive Histogram Equalization
+            'accuracy': 0.783943,
+            'precision': 0.783943,
+            'recall': 0.783943,
+            'f1_score': 0.783943
+        },
+        'ResNet': { // ResNet model - Original Image
+            'accuracy': 0.931523,
+            'precision': 0.931523,
+            'recall': 0.931523,
+            'f1_score': 0.931523
+        },
+        'ResNetN': { // ResNet model - Negative Transformer
+            'accuracy': 0.958678,
+            'precision': 0.958678,
+            'recall': 0.958678,
+            'f1_score': 0.958678
+        },
+        'ResNetAHE': { // ResNet model - Adaptive Histogram Equalization
+            'accuracy': 0.971665,
+            'precision': 0.971665,
+            'recall': 0.971665,
+            'f1_score': 0.971665
+        }
+    };
 
 
     // --- Helper Functions ---
@@ -78,7 +163,144 @@ document.addEventListener('DOMContentLoaded', function () {
         if (medicalReport) medicalReport.style.display = 'none';
         if (medicalReport) medicalReport.innerHTML = '';
         if (reportPlaceholder) reportPlaceholder.style.display = 'block';
+        currentReportId = null; 
     }
+
+    // NEW: Function to reset validation display
+    function resetValidationDisplay() {
+        if (trueLabelDisplay) trueLabelDisplay.textContent = 'Not Checked';
+        if (validationResultsOutput) {
+            validationResultsOutput.innerHTML = '<p class="placeholder-text">Upload an image with a label (e.g., \'image_benign.png\') and click \'Validate with Label\' to see metrics.</p>';
+        }
+        if (metricsComparisonGraph) {
+            metricsComparisonGraph.innerHTML = '<h3>Performance Comparison (Accuracy)</h3><p class="placeholder-text">Graph will appear here after validation.</p>';
+        }
+        if (validationSection) {
+            validationSection.style.display = 'block'; // Keep validation section visible with placeholder
+        }
+    }
+
+    // NEW: Function to display validation metrics
+    function displayValidationMetrics(validationMetrics) {
+        if (!validationSection || !trueLabelDisplay || !validationResultsOutput || !metricsComparisonGraph) return;
+
+        validationSection.style.display = 'block'; // Ensure the section is visible
+
+        if (validationMetrics.true_label_found) {
+            trueLabelDisplay.textContent = `${validationMetrics.true_label} (${validationMetrics.true_label === 1 ? 'Malignant' : 'Benign'})`;
+            validationResultsOutput.innerHTML = ''; // Clear previous content
+
+            // Create a combined table for Overall and Current Performance
+            let combinedPerformanceHtml = '<h3>Performance Metrics (Overall vs. Current)</h3>';
+            combinedPerformanceHtml += '<table class="metrics-table"><thead><tr><th>Model</th><th>Metric</th><th>Overall Baseline</th><th>Current Image</th></tr></thead><tbody>';
+
+            const modelsToCompare = Object.keys(validationMetrics.performance);
+            // UPDATED: Only display Accuracy in the table
+            const metricsToDisplayInTable = ['accuracy']; 
+
+            modelsToCompare.forEach(modelName => {
+                const currentMetrics = validationMetrics.performance[modelName];
+                const overallMetrics = OVERALL_METRICS_BASELINE[modelName] || {}; // Get baseline or empty object
+
+                metricsToDisplayInTable.forEach((metric, index) => {
+                    const overallValue = overallMetrics[metric] !== undefined ? (typeof overallMetrics[metric] === 'number' ? overallMetrics[metric].toFixed(4) : overallMetrics[metric]) : 'N/A';
+                    const currentValue = currentMetrics[metric] !== null ? currentMetrics[metric].toFixed(4) : 'N/A';
+                    
+                    combinedPerformanceHtml += `<tr>
+                        ${index === 0 ? `<td rowspan="${metricsToDisplayInTable.length}">${modelName}</td>` : ''}
+                        <td>${metric.replace('_', ' ').split(' ').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ')}</td>
+                        <td>${overallValue}</td>
+                        <td>${currentValue}</td>
+                    </tr>`;
+                });
+            });
+            combinedPerformanceHtml += '</tbody></table>';
+            validationResultsOutput.innerHTML += combinedPerformanceHtml;
+
+
+            // Trustability Metrics Table (unchanged)
+            let trustabilityHtml = '<h3>Trustability Metrics</h3>';
+            trustabilityHtml += '<table class="metrics-table"><thead><tr><th>Model</th><th>Predicted Class</th><th>Is Correct</th><th>Trust Score</th></tr></thead><tbody>';
+            for (const modelName in validationMetrics.trustability) {
+                const metrics = validationMetrics.trustability[modelName];
+                const predictedClassLabel = metrics.predicted_class === 1 ? 'Malignant' : 'Benign';
+                const isCorrectClass = metrics.is_correct ? 'metric-correct' : 'metric-incorrect';
+                trustabilityHtml += `<tr>
+                    <td>${modelName}</td>
+                    <td><span class="${predictedClassLabel.toLowerCase()}">${predictedClassLabel}</span></td>
+                    <td class="${isCorrectClass}">${metrics.is_correct ? 'Yes' : 'No'}</td>
+                    <td>${metrics.trust_score}</td>
+                </tr>`;
+            }
+            trustabilityHtml += '</tbody></table>';
+            validationResultsOutput.innerHTML += trustabilityHtml;
+
+            // Call graph drawing function
+            drawComparisonGraph(OVERALL_METRICS_BASELINE, validationMetrics.performance);
+
+        } else {
+            trueLabelDisplay.textContent = 'Not Found in Filename';
+            validationResultsOutput.innerHTML = '<p class="placeholder-text">No true label could be extracted from the image filename. Performance and trustability metrics cannot be calculated.</p>';
+            metricsComparisonGraph.innerHTML = '<h3>Performance Comparison (Accuracy)</h3><p class="placeholder-text">Graph requires a true label to be present in the filename.</p>';
+        }
+    }
+
+    // NEW: Function to draw a simple comparison bar graph (now only for Accuracy)
+    function drawComparisonGraph(overallMetrics, currentMetrics) {
+        if (!metricsComparisonGraph) return;
+
+        metricsComparisonGraph.innerHTML = '<h3>Performance Comparison (Accuracy)</h3>'; // Updated title
+        const graphContainer = document.createElement('div');
+        graphContainer.className = 'bar-chart-container';
+        metricsComparisonGraph.appendChild(graphContainer);
+
+        const models = Object.keys(currentMetrics); // Use models that actually had current predictions
+        const metricsToGraph = ['accuracy']; // UPDATED: Only graph Accuracy
+
+        models.forEach(modelName => {
+            const modelBarGroup = document.createElement('div');
+            modelBarGroup.className = 'model-bar-group';
+            
+            const modelLabel = document.createElement('div');
+            modelLabel.className = 'model-label';
+            modelLabel.textContent = modelName;
+            modelBarGroup.appendChild(modelLabel);
+
+            metricsToGraph.forEach(metric => {
+                const overallValue = overallMetrics[modelName] && typeof overallMetrics[modelName][metric] === 'number' ? overallMetrics[modelName][metric] : 0;
+                const currentValue = currentMetrics[modelName] && typeof currentMetrics[modelName][metric] === 'number' ? currentMetrics[modelName][metric] : 0;
+
+                const barWrapper = document.createElement('div');
+                barWrapper.className = 'bar-wrapper';
+                barWrapper.innerHTML = `<div class="metric-label">${metric.replace('_', ' ').split(' ').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ')}</div>`;
+
+                const overallBar = document.createElement('div');
+                overallBar.className = 'bar overall-bar';
+                overallBar.style.width = `${(overallValue * 100).toFixed(0)}%`;
+                overallBar.textContent = `${(overallValue * 100).toFixed(1)}%`;
+                barWrapper.appendChild(overallBar);
+
+                const currentBar = document.createElement('div');
+                currentBar.className = 'bar current-bar';
+                currentBar.style.width = `${(currentValue * 100).toFixed(0)}%`;
+                currentBar.textContent = `${(currentValue * 100).toFixed(1)}%`;
+                barWrapper.appendChild(currentBar);
+
+                modelBarGroup.appendChild(barWrapper);
+            });
+            graphContainer.appendChild(modelBarGroup);
+        });
+
+        // Add a legend
+        const legend = document.createElement('div');
+        legend.className = 'graph-legend';
+        legend.innerHTML = `
+            <span class="legend-item"><span class="legend-color overall-color"></span> Overall Baseline</span>
+            <span class="legend-item"><span class="legend-color current-color"></span> Current Image</span>
+        `;
+        metricsComparisonGraph.appendChild(legend);
+    }
+
 
     // --- Event Listeners ---
 
@@ -140,6 +362,7 @@ document.addEventListener('DOMContentLoaded', function () {
             resetImageDisplays();
             resetGeneResultsDisplay();
             resetReportDisplay();
+            resetValidationDisplay(); // NEW: Reset validation display
             alert('Questionnaire reset.');
         });
     }
@@ -162,6 +385,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
             showSpinner();
             resetImageDisplays(); // Reset previous results
+            resetValidationDisplay(); // NEW: Reset validation display
 
             const formData = new FormData();
             formData.append('file', imageUpload.files[0]);
@@ -199,25 +423,99 @@ document.addEventListener('DOMContentLoaded', function () {
                         for (const modelName in result.model_predictions) {
                             const prob = result.model_predictions[modelName];
                             const li = document.createElement('li');
-                            li.textContent = `${modelName}: ${prob > 0.5 ? "Cancer" : "Normal"} (${prob !== null ? parseFloat(prob).toFixed(4) : 'N/A'})`;
+                            const predictedClass = prob > 0.5 ? "Malignant" : "Benign";
+                            const classColor = predictedClass === "Malignant" ? "result-cancer" : "result-normal";
+                            li.innerHTML = `${modelName}: <span class="${classColor}">${predictedClass}</span> (${prob !== null ? parseFloat(prob).toFixed(4) : 'N/A'})`;
                             ul.appendChild(li);
                         }
                         modelPredictionsContainer.appendChild(ul);
                     }
+
+                    // NEW: Display validation metrics if available
+                    if (result.validation_metrics) {
+                        displayValidationMetrics(result.validation_metrics);
+                    } else {
+                        resetValidationDisplay(); // Ensure it's reset if no metrics are returned
+                    }
+
                 } else {
                     alert('Error predicting image: ' + (result.error || 'Unknown error'));
                     if (resultText) resultText.textContent = `Error: ${result.error || 'Unknown error'}`;
+                    resetValidationDisplay(); // Also reset validation on error
                 }
             } catch (error) {
                 console.error('Error predicting image:', error);
                 alert('An error occurred during image prediction.');
                 if (resultText) resultText.textContent = 'Error: An unexpected error occurred.';
+                resetValidationDisplay(); // Also reset validation on error
             } finally {
                 hideSpinner();
             }
         });
     }
-    
+
+    // NEW: Validate Button Event Listener
+    if (validateButton && imageUpload) {
+        validateButton.addEventListener('click', async function () {
+            if (!imageUpload.files || imageUpload.files.length === 0) {
+                alert('Please select an image file to validate.');
+                return;
+            }
+
+            showSpinner();
+            resetImageDisplays(); // Reset previous prediction results
+            resetValidationDisplay(); // Always reset validation display for a fresh start
+
+            const formData = new FormData();
+            formData.append('mammogram', imageUpload.files[0]); // Use 'mammogram' as the key as per server.py
+
+            try {
+                const response = await fetch('/validate', { // Call the new /validate endpoint
+                    method: 'POST',
+                    body: formData,
+                });
+                const result = await response.json();
+
+                if (response.ok) {
+                    // Display prediction results (optional, but good for context)
+                    if (result.predictions) {
+                        if (modelPredictionsContainer) {
+                            modelPredictionsContainer.innerHTML = ''; // Clear placeholder
+                            const ul = document.createElement('ul');
+                            for (const modelName in result.predictions) {
+                                const prob = result.predictions[modelName];
+                                const li = document.createElement('li');
+                                const predictedClass = prob > 0.5 ? "Malignant" : "Benign";
+                                const classColor = predictedClass === "Malignant" ? "result-cancer" : "result-normal";
+                                li.innerHTML = `${modelName}: <span class="${classColor}">${predictedClass}</span> (${prob !== null ? parseFloat(prob).toFixed(4) : 'N/A'})`;
+                                ul.appendChild(li);
+                            }
+                            modelPredictionsContainer.appendChild(ul);
+                        }
+                    }
+
+                    // Display validation metrics
+                    if (result.validation) {
+                        displayValidationMetrics(result.validation);
+                    } else {
+                        resetValidationDisplay(); // Fallback
+                    }
+
+                } else {
+                    alert('Error during validation: ' + (result.error || 'Unknown error'));
+                    resetValidationDisplay(); // Reset on error
+                }
+            } catch (error) {
+                console.error('Error during validation:', error);
+                alert('An error occurred during validation. Please try again.');
+                resetValidationDisplay(); // Reset on error
+            } finally {
+                hideSpinner();
+            }
+        });
+    }
+
+
     if (imageUpload) {
         imageUpload.addEventListener('change', function(event) {
             if (event.target.files && event.target.files[0]) {
@@ -234,6 +532,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 reader.readAsDataURL(event.target.files[0]);
             } else {
                  resetImageDisplays(); // If no file is selected (e.g., user cancels dialog)
+                 resetValidationDisplay(); // Also reset validation if image is cleared
             }
         });
     }
@@ -276,10 +575,10 @@ document.addEventListener('DOMContentLoaded', function () {
                         genePredictionResultText.textContent = result.predicted_class || 'Predicted gene malignancy status';
                     }
                     if (genePredictionProbability) {
-                        genePredictionProbability.textContent = result.probability !== null ? 
+                        genePredictionProbability.textContent = result.probability !== null ?
                             parseFloat(result.probability).toFixed(4) : 'N/A';
                     }
-                    
+
                     alert('Gene prediction completed successfully.');
                 } else {
                     alert('Error during gene prediction: ' + (result.error || 'Unknown error'));
@@ -303,7 +602,7 @@ document.addEventListener('DOMContentLoaded', function () {
             if (!currentPatientId && patientQuestionnaireForm.patientId.value) {
                 currentPatientId = patientQuestionnaireForm.patientId.value;
             }
-            
+
             if (!currentPatientId) {
                 alert('Please save patient information or enter a Patient ID first.');
                 return;
@@ -335,7 +634,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 originalImageBase64: currentOriginalImageBase64, // Send base64 images for report context
                 visualizationImageBase64: currentVisualizationImageBase64
             };
-            
+
             console.log("Sending to /generate_report:", JSON.stringify(reportPayload, null, 2));
 
 
@@ -347,6 +646,10 @@ document.addEventListener('DOMContentLoaded', function () {
                 });
                 const result = await response.json();
                 if (response.ok) {
+                    currentReportId = result.report_id; 
+                    console.log('Generated Report ID:', currentReportId); 
+                    console.log('Generated Patient ID:', result.patient_id); 
+
                     if (medicalReport && result.report_html) {
                         medicalReport.innerHTML = result.report_html; // Display HTML report
                         medicalReport.style.display = 'block';
@@ -422,53 +725,16 @@ document.addEventListener('DOMContentLoaded', function () {
                 alert('Patient ID is not available. Cannot download report.');
                 return;
             }
-            // This assumes you have an endpoint like '/download_report_pdf/<patient_id>'
-            // or you pass the report content to a generic PDF generation endpoint.
-            // For simplicity, let's assume the latest report for the patient.
-            // The actual PDF generation must happen on the server.
-            // This button will just navigate to the download URL.
-            
-            // Option 1: If report ID is known and server can generate PDF from it
-            // const reportId = ...; // if you get a report_id from generate_report response
-            // window.location.href = `/download_report_pdf_by_id/${reportId}`;
-
-            // Option 2: If server generates PDF based on patient_id (latest report)
-            window.location.href = `/download_report_pdf/${currentPatientId}`;
-            
-            // Option 3: If you want to send current report HTML to server for PDF conversion
-            /*
-            const reportHtmlContent = medicalReport ? medicalReport.innerHTML : null;
-            if (reportHtmlContent) {
-                showSpinner();
-                fetch('/generate_pdf_from_html', { // You'd need to create this endpoint
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ html_content: reportHtmlContent, patient_id: currentPatientId })
-                })
-                .then(response => {
-                    if (!response.ok) throw new Error('PDF generation failed');
-                    return response.blob();
-                })
-                .then(blob => {
-                    const url = window.URL.createObjectURL(blob);
-                    const a = document.createElement('a');
-                    a.style.display = 'none';
-                    a.href = url;
-                    a.download = `medical_report_${currentPatientId || 'unknown'}.pdf`;
-                    document.body.appendChild(a);
-                    a.click();
-                    window.URL.revokeObjectURL(url);
-                    document.body.removeChild(a);
-                })
-                .catch(error => {
-                    console.error('Error downloading PDF:', error);
-                    alert('Error downloading PDF: ' + error.message);
-                })
-                .finally(hideSpinner);
-            } else {
-                alert('No report content to download.');
+            if (!currentReportId) { 
+                alert('Report ID is not available. Please generate the report first.'); 
+                return; 
             }
-            */
+
+            // This assumes your server.py has the route: @app.route('/download_report/<patient_id>/<report_id>')
+            window.location.href = `/download_report/${currentPatientId}/${currentReportId}`; 
+
+            // The commented out "Option 3" is a more complex client-side PDF generation,
+            // which you don't seem to be using, so we stick to the server-side download.
         });
     }
 

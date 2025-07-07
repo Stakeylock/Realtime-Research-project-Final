@@ -2,18 +2,24 @@ import tkinter as tk
 from tkinter import filedialog, messagebox
 from PIL import Image, ImageTk
 import numpy as np
-import pandas as pd # Added
-import joblib      # Added
+import pandas as pd 
+import joblib    
 import tensorflow as tf
 from tensorflow.keras.models import load_model
 from tensorflow.keras import backend as K
 import cv2
 import os
-from skimage.feature import hog, local_binary_pattern # For HOG/LBP placeholders
-from sklearn.exceptions import NotFittedError # Added
+from skimage.feature import hog, local_binary_pattern 
+from sklearn.exceptions import NotFittedError 
+from skimage.util import img_as_ubyte
+from PIL import ImageDraw, ImageFont
+import io 
+import base64 
+from skimage import exposure
+from sklearn.metrics import f1_score, accuracy_score, precision_score, recall_score # Added for more metrics
 
 # --- Configuration ---
-MODEL_DIR = 'e:\\bcrrp\\models'
+MODEL_DIR = 'e:\\bcrrp\\models' # Ensure this path is correct for your environment
 # Image Model Paths
 MODEL_PATHS = {
     'Hog': os.path.join(MODEL_DIR, 'Hog_model.h5'),
@@ -29,12 +35,10 @@ MODEL_PATHS = {
     'SiftAHE': os.path.join(MODEL_DIR, 'SiftAHE_model.h5'),
     'SiftN': os.path.join(MODEL_DIR, 'SiftN_model.h5'),
 }
-# Gene Model Paths (Added)
 GENE_MODEL_PATH = os.path.join(MODEL_DIR, 'gene_expression_model.joblib')
 GENE_SCALER_PATH = os.path.join(MODEL_DIR, 'gene_expression_scaler.joblib')
 GENE_FEATURES_PATH = os.path.join(MODEL_DIR, 'gene_feature_names.joblib')
-# SIFT KMeans Model Path (Added)
-SIFT_KMEANS_PATH = os.path.join(MODEL_DIR, 'sift_kmeans_model.joblib') # Assuming this is the filename
+SIFT_KMEANS_PATH = os.path.join(MODEL_DIR, 'sift_kmeans_model.joblib')
 
 # Image size used for ResNet models
 RESNET_IMG_SIZE = (224, 224)
@@ -44,14 +48,8 @@ FEATURE_IMG_SIZE = (224, 224)
 LBP_RADIUS = 3
 LBP_N_POINTS = 24 # P = 24 in notebook
 
-# --- Global Variables for Loaded Models --- (Ensure these are defined if not already)
 sift_kmeans_model = None
-# models = {} # Already defined
-# gene_pipeline = { ... } # Already defined
-
-# --- Model Loading ---
-models = {}
-# Initialize gene model pipeline
+models = {} 
 gene_pipeline = {
     'model': None,
     'scaler': None,
@@ -74,33 +72,26 @@ def load_gene_model():
         print(f"Unexpected error loading gene model: {e}")
         return False
 
-# Call this function during initialization
-load_gene_model()
-
 def load_all_models():
-    """Loads all models specified in MODEL_PATHS and gene/SIFT pipeline components."""
-    global sift_kmeans_model # Added global variable for SIFT KMeans
+    """Loads all image and gene expression models."""
+    global sift_kmeans_model
     print("Loading image models...")
     loaded_image_count = 0
     # Load Image Models (.h5)
     for name, path in MODEL_PATHS.items():
         if os.path.exists(path):
             try:
-                # Suppress TensorFlow loading warnings temporarily if needed
-                # tf.get_logger().setLevel('ERROR')
                 models[name] = load_model(path, compile=False)
-                # tf.get_logger().setLevel('INFO') # Restore logging level
                 print(f"Loaded {name} from {path}")
                 loaded_image_count += 1
             except Exception as e:
                 print(f"Error loading image model {name} from {path}: {e}")
-                models[name] = None # Mark as failed
+                models[name] = None 
         else:
             print(f"Image model file not found: {path}")
             models[name] = None
     print(f"Finished loading image models. {loaded_image_count}/{len(MODEL_PATHS)} loaded successfully.")
 
-    # Load Gene Pipeline Components (.joblib) - Added
     print("\nLoading gene expression pipeline components...")
     loaded_gene_count = 0
     try:
@@ -127,19 +118,20 @@ def load_all_models():
 
     except Exception as e:
         print(f"Error loading gene pipeline component: {e}")
-        # Don't mark individual components as None here, check later
+        
 
     print(f"Finished loading gene components. {loaded_gene_count}/3 loaded successfully.")
 
-    # Load SIFT KMeans Model (.joblib) - Added
     print("\nLoading SIFT KMeans model...")
     try:
         if os.path.exists(SIFT_KMEANS_PATH):
             sift_kmeans_model = joblib.load(SIFT_KMEANS_PATH)
+            # Store SIFT KMeans model in the 'models' dictionary for consistency
+            models['sift_kmeans_model'] = sift_kmeans_model
             print(f"Loaded SIFT KMeans model from {SIFT_KMEANS_PATH}")
         else:
             print(f"SIFT KMeans model file not found: {SIFT_KMEANS_PATH}")
-            sift_kmeans_model = None # Ensure it's None if not found
+            sift_kmeans_model = None 
     except Exception as e:
         print(f"Error loading SIFT KMeans model: {e}")
         sift_kmeans_model = None
@@ -153,10 +145,94 @@ def load_all_models():
         messagebox.showwarning("Warning", "Could not load all gene pipeline components. Gene prediction will be disabled.")
 
     if sift_kmeans_model is None:
-         messagebox.showwarning("Warning", "Could not load SIFT KMeans model. SIFT predictions will be disabled.")
+         messagebox.showwarning("Warning", "Could not load SIFT KMeans model. SIFT predictions might be disabled or incorrect.")
          # Allow app to run, but SIFT won't work
 
     return True
+
+def get_label_from_filename(filepath):
+    """
+    Extracts the ground truth label from the image filename.
+    Labels can be 'benign', 'normal', '0' (for class 0) or 'malignant', '1' (for class 1).
+    Returns 0 for benign/normal, 1 for malignant, or None if no label is found.
+    """
+    if not filepath:
+        return None
+    # Normalize filename for consistent matching
+    filename = os.path.basename(filepath).lower()
+    
+    # Define keywords for each class
+    malignant_keywords = ['malignant', '1']
+    benign_keywords = ['benign', 'normal', '0']
+
+    if any(keyword in filename for keyword in malignant_keywords):
+        return 1
+    if any(keyword in filename for keyword in benign_keywords):
+        return 0
+        
+    return None # Return None if no relevant keyword is found
+
+def calculate_validation_metrics(predictions_dict, image_path):
+    """
+    Calculates performance and trustability metrics by comparing predictions
+    to a ground truth label extracted from the filename.
+
+    Args:
+        predictions_dict (dict): Dictionary of model predictions, e.g., {'ResNet': (prob, class), ...}
+                                 Note: The predictions_dict now contains probabilities directly.
+        image_path (str): The path to the image file to check for a label.
+
+    Returns:
+        dict: A dictionary containing the found label, performance, and trustability metrics.
+    """
+    true_label = get_label_from_filename(image_path)
+    
+    metrics = {
+        "true_label_found": true_label is not None,
+        "true_label": true_label,
+        "performance": {},
+        "trustability": {}
+    }
+
+    # If no label is found in the filename, we cannot calculate metrics.
+    if true_label is None:
+        return metrics
+
+    y_true = [int(true_label)]
+    
+    for model_name, prob in predictions_dict.items():
+        if prob is None:
+            continue # Skip models that didn't produce a prediction
+
+        # Convert probability to predicted class (0 or 1)
+        predicted_class = 1 if prob > 0.5 else 0
+        y_pred = [predicted_class]
+
+        # --- Performance Metrics ---
+        # Accuracy, Precision, Recall, F1 Score
+        accuracy = accuracy_score(y_true, y_pred)
+        precision = precision_score(y_true, y_pred, pos_label=1, zero_division=0.0)
+        recall = recall_score(y_true, y_pred, pos_label=1, zero_division=0.0)
+        f1 = f1_score(y_true, y_pred, pos_label=1, zero_division=0.0)
+        
+        metrics["performance"][model_name] = {
+            'accuracy': accuracy,
+            'precision': precision,
+            'recall': recall,
+            'f1_score': f1
+        }
+        
+        # --- Trustability Metric ---
+        # Is the prediction correct?
+        is_correct = (predicted_class == true_label)
+        trust_score = "High" if is_correct else "Low" # Simple heuristic
+        metrics["trustability"][model_name] = {
+            'trust_score': trust_score,
+            'is_correct': is_correct,
+            'predicted_class': predicted_class # Include predicted class for clarity
+        }
+        
+    return metrics
 
 
 # --- Gene Expression Prediction Function ---
@@ -211,8 +287,7 @@ def predict_gene_expression_data(gene_data_file_path):
 
         # Interpret prediction (modify based on your actual labels)
         # This interpretation is based on the example in train_gene_model.py
-        predicted_class_label = "Class 1" if prediction[0] == 1 else "Class 0"
-        # predicted_class_label = "Condition 1 (e.g., 32 hours)" if prediction[0] == 1 else "Condition 0 (e.g., 6 hours)"
+        predicted_class_label = "Malignant" if prediction[0] == 1 else "Benign"
         
         # Return the predicted class label and the probability of the predicted class
         # For binary classification, predict_proba returns [[prob_class_0, prob_class_1]]
@@ -230,8 +305,6 @@ def predict_gene_expression_data(gene_data_file_path):
 
 
 # --- Preprocessing ---
-# !! IMPORTANT: Replace these with your actual preprocessing logic !!
-
 def preprocess_image_resnet(img_path):
     """Preprocesses image for ResNet models."""
     try:
@@ -245,151 +318,106 @@ def preprocess_image_resnet(img_path):
         print(f"Error preprocessing for ResNet: {e}")
         return None
 
-def extract_hog_features(img_path):
-    """
-    Extracts HOG features and formats them for model input.
-    Returns a 3D tensor with shape (1, 224, 224, 3) as expected by the model.
-    """
-    print("Extracting HOG features...")
-    try:
-        # Read and resize image
-        img = cv2.imread(img_path)
-        if img is None:
-            print(f"Error: Could not read image {img_path}")
-            return None
-        
-        # Convert to grayscale for HOG
-        img_gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        img_resized = cv2.resize(img_gray, FEATURE_IMG_SIZE)
-        
-        # Extract HOG features with visualization
-        features, hog_image = hog(
-            img_resized, 
-            orientations=9, 
-            pixels_per_cell=(8, 8),
-            cells_per_block=(2, 2), 
-            visualize=True, 
-            block_norm='L2-Hys'
-        )
-        
-        # Normalize HOG visualization to 0-255 range
-        hog_image = (hog_image * 255).astype("uint8")
-        
-        # Resize HOG image to match model input size
-        hog_image_resized = cv2.resize(hog_image, FEATURE_IMG_SIZE)
-        
-        # Convert to 3-channel image (duplicate grayscale across channels)
-        hog_3channel = np.stack([hog_image_resized] * 3, axis=-1)
-        
-        # Add batch dimension
-        hog_3channel = np.expand_dims(hog_3channel, axis=0)
-        
-        print(f"HOG features extracted with shape: {hog_3channel.shape}")
-        return hog_3channel
-    except Exception as e:
-        print(f"Error extracting HOG features: {e}")
-        return None
+def extract_hog_features(image_path):
+    img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
+    if img is None: return None, None # Return both input and viz
+    
+    img_resized = cv2.resize(img, FEATURE_IMG_SIZE)
+    
+    # Calculate HOG features and get the visualization
+    fd, hog_image = hog(img_resized, orientations=9, pixels_per_cell=(8, 8),
+                         cells_per_block=(2, 2), visualize=True) 
+    
+    # Rescale HOG visualization to be between 0 and 1, then convert to 8-bit unsigned integer
+    hog_image_rescaled = exposure.rescale_intensity(hog_image, in_range=(0, 1))
+    hog_image_display = img_as_ubyte(hog_image_rescaled)
+    
+    # Convert to 3 channels for consistency if models expect it, and add batch dim
+    hog_input_for_model = cv2.cvtColor(img_resized, cv2.COLOR_GRAY2BGR) # Preprocess original for HOG model input
+    hog_input_for_model = np.expand_dims(hog_input_for_model, axis=0)
+    
+    # Convert hog_image_display (grayscale) to 3-channel for visualization grid
+    hog_viz_3_channel = cv2.cvtColor(hog_image_display, cv2.COLOR_GRAY2BGR)
+
+    print(f"Extracting HOG features... (input shape: {hog_input_for_model.shape})")
+    # Return model input and visualization
+    return hog_input_for_model, Image.fromarray(hog_viz_3_channel)
 
 def extract_lbp_features(img_path):
-    """
-    Extracts LBP features and formats them for model input.
-    Returns a 3D tensor with shape (1, 224, 224, 3) as expected by the model.
-    """
-    print("Extracting LBP features...")
-    try:
-        # Read and resize image
-        img = cv2.imread(img_path)
-        if img is None:
-            print(f"Error: Could not read image {img_path}")
-            return None
-        
-        # Convert to grayscale for LBP
-        img_gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        img_resized = cv2.resize(img_gray, FEATURE_IMG_SIZE)
-        
-        # Extract LBP features
-        lbp = local_binary_pattern(img_resized, LBP_N_POINTS, LBP_RADIUS, method='uniform')
-        
-        # Normalize LBP to 0-255 range for visualization
-        lbp_normalized = np.uint8((lbp / lbp.max()) * 255)
-        
-        # Convert to 3-channel image (duplicate grayscale across channels)
-        lbp_3channel = np.stack([lbp_normalized] * 3, axis=-1)
-        
-        # Add batch dimension
-        lbp_3channel = np.expand_dims(lbp_3channel, axis=0)
-        
-        print(f"LBP features extracted with shape: {lbp_3channel.shape}")
-        return lbp_3channel
-    except Exception as e:
-        print(f"Error extracting LBP features: {e}")
-        return None
+    img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
+    if img is None: return None, None # Return both input and viz
+    
+    img_resized = cv2.resize(img, FEATURE_IMG_SIZE) # Resize image before LBP computation
+
+    radius = 3
+    n_points = 8 * radius
+    lbp_image = local_binary_pattern(img_resized, n_points, radius, method="uniform")
+    
+    # Normalize LBP image for model input and display (0-255)
+    lbp_min = lbp_image.min()
+    lbp_max = lbp_image.max()
+    if lbp_max - lbp_min == 0: # Handle cases of uniform image
+        lbp_image_normalized = np.zeros_like(lbp_image, dtype=np.uint8)
+    else:
+        lbp_image_normalized = ((lbp_image - lbp_min) / (lbp_max - lbp_min) * 255).astype(np.uint8)
+
+    # Convert normalized LBP image to 3 channels and ensure correct size for model input
+    lbp_input_for_model = cv2.cvtColor(lbp_image_normalized, cv2.COLOR_GRAY2BGR)
+    lbp_input_for_model = cv2.resize(lbp_input_for_model, FEATURE_IMG_SIZE) # Ensure it's 224x224
+    
+    # Add batch dimension and convert to float32 as expected by Keras models
+    lbp_input_for_model = np.expand_dims(lbp_input_for_model, axis=0).astype(np.float32)
+
+    # Visualization image (already in 3-channel from lbp_input_for_model preparation if needed for display directly)
+    # Re-using lbp_image_normalized for a dedicated display variable
+    lbp_viz_3_channel = cv2.cvtColor(lbp_image_normalized, cv2.COLOR_GRAY2BGR)
+    lbp_viz_3_channel = cv2.resize(lbp_viz_3_channel, FEATURE_IMG_SIZE) # Ensure display image is also consistent
+
+    print(f"Extracting LBP features... (input shape: {lbp_input_for_model.shape})")
+    # Return model input and visualization
+    return lbp_input_for_model, Image.fromarray(lbp_viz_3_channel)
+
 
 def extract_sift_features(img_path):
-    """
-    Extracts SIFT features, creates a Bag of Visual Words representation,
-    and formats the output for model input.
-    Returns a 3D tensor with shape (1, 224, 224, 3) as expected by the model.
-    """
-    global sift_kmeans_model
+    img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
+    if img is None: return None, None # Return both input and viz
     
-    print("Extracting SIFT features...")
-    try:
-        if sift_kmeans_model is None:
-            print("Error: SIFT KMeans model not loaded. Cannot extract SIFT features.")
-            return None
-            
-        # Read and resize image
-        img = cv2.imread(img_path)
-        if img is None:
-            print(f"Error: Could not read image {img_path}")
-            return None
-            
-        # Convert to grayscale for SIFT
-        img_gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        img_resized = cv2.resize(img_gray, FEATURE_IMG_SIZE)
-        
-        # Extract SIFT descriptors
-        sift = cv2.SIFT_create()
-        keypoints, descriptors = sift.detectAndCompute(img_resized, None)
-        
-        if descriptors is None or len(keypoints) == 0:
-            print("Warning: No SIFT keypoints found in the image.")
-            # Create a blank visualization
-            sift_visualization = np.zeros((*FEATURE_IMG_SIZE, 3), dtype=np.uint8)
-            sift_visualization = np.expand_dims(sift_visualization, axis=0)
-            return sift_visualization
-        
-        # Create Bag of Visual Words representation
-        # Predict cluster for each descriptor
-        visual_words = sift_kmeans_model.predict(descriptors)
-        
-        # Create histogram of visual words
-        histogram = np.zeros(sift_kmeans_model.n_clusters)
-        for word in visual_words:
-            histogram[word] += 1
-            
-        # Normalize histogram
-        if np.sum(histogram) > 0:
-            histogram = histogram / np.sum(histogram)
-        
-        # Create a visualization of the SIFT keypoints
-        # Draw keypoints on the image
-        blank = np.zeros((*FEATURE_IMG_SIZE, 3), dtype=np.uint8)
-        sift_visualization = cv2.drawKeypoints(img_resized, keypoints, blank, 
-                                              flags=cv2.DRAW_MATCHES_FLAGS_DRAW_RICH_KEYPOINTS)
-        
-        # Ensure the visualization is the right shape and add batch dimension
-        sift_visualization = cv2.resize(sift_visualization, FEATURE_IMG_SIZE)
-        sift_visualization = np.expand_dims(sift_visualization, axis=0)
-        
-        print(f"SIFT features extracted with {len(keypoints)} keypoints")
-        print(f"SIFT visualization shape: {sift_visualization.shape}")
-        return sift_visualization
-        
-    except Exception as e:
-        print(f"Error extracting SIFT features: {e}")
-        return None
+    img_resized = cv2.resize(img, FEATURE_IMG_SIZE)
+    sift = cv2.SIFT_create()
+    keypoints, descriptors = sift.detectAndCompute(img_resized, None)
+    
+    # --- Visualization of SIFT keypoints ---
+    # Draw keypoints on a 3-channel version of the resized image
+    img_display_with_kp = cv2.drawKeypoints(
+        cv2.cvtColor(img_resized, cv2.COLOR_GRAY2BGR), # Base image for drawing
+        keypoints, None,
+        flags=cv2.DRAW_MATCHES_FLAGS_DRAW_RICH_KEYPOINTS
+    )
+    
+    # SIFT model input (Bag of Visual Words histogram)
+    if descriptors is None or len(keypoints) == 0:
+        print("No SIFT descriptors found. Returning black image for input and visualization.")
+        black_img_np = np.zeros(FEATURE_IMG_SIZE + (3,), dtype=np.uint8)
+        # Ensure black_img_np is float32 for model input if that's its expectation
+        return np.expand_dims(black_img_np, axis=0).astype(np.float32), Image.fromarray(black_img_np)
+
+    global sift_kmeans_model # This line attempts to access a global variable
+    if sift_kmeans_model is None: # Check the global variable directly
+        print("Error: SIFT KMeans model not loaded. Returning black image for input and visualization.")
+        black_img_np = np.zeros(FEATURE_IMG_SIZE + (3,), dtype=np.uint8)
+        return np.expand_dims(black_img_np, axis=0).astype(np.float32), Image.fromarray(black_img_np)
+    
+    # Use the loaded global sift_kmeans_model
+    visual_words = sift_kmeans_model.predict(descriptors)
+    hist, _ = np.histogram(visual_words, bins=np.arange(sift_kmeans_model.n_clusters + 1))
+    
+    # The input to the SIFT model (Sift_model.h5) is likely the image with keypoints drawn
+    # Ensure this image is float32 if the SIFT CNN model expects it.
+    sift_input_for_model = np.expand_dims(img_display_with_kp, axis=0).astype(np.float32)
+    
+    print(f"SIFT features extracted with {len(keypoints)} keypoints (input shape: {sift_input_for_model.shape})")
+    # Return model input and visualization
+    return sift_input_for_model, Image.fromarray(img_display_with_kp)
 
 def get_grad_cam(input_model, img_array, layer_name):
     """Generates Grad-CAM heatmap."""
@@ -438,13 +466,12 @@ def get_grad_cam(input_model, img_array, layer_name):
                 class_channel = predictions[:, pred_index]
             else:
                 # Binary case (single output neuron)
-                pred_index = 0 if predictions[0][0] < 0.5 else 1 # Assuming 0.5 threshold
-                class_channel = predictions # Use the raw output for binary
+                pred_index = 0 if predictions[0][0] < 0.5 else 1 # Assuming 0.5 threshold for binary
+                class_channel = predictions 
                 
         # Gradient of the output neuron with respect to the output feature map of the last conv layer
         grads = tape.gradient(class_channel, last_conv_layer_output)
         
-        # Vector of mean intensity of the gradient over a specific feature map channel
         if grads is None: # Add check for None grads
             print(f"Error in Grad-CAM: Grads are None for {input_model.name}. Check model output and class_channel.")
             return None
@@ -504,100 +531,159 @@ def find_last_conv_layer(model):
     print("Warning: Could not find a suitable layer for Grad-CAM.")
     return None
 
-def create_visualization_grid(original_img_pil, grad_cam_images_dict, thumbnail_size=(200, 200), padding=10):
-    """Creates a more compact grid of the original image and Grad-CAM overlays."""
+def create_visualization_grid(original_image_pil, grad_cam_images, feature_visualizations=None, grid_size=(3, 4)): 
+    """
+    Creates a grid of visualizations including the original image, Grad-CAMs, and feature visualizations.
+    """
+    original_image_pil = original_image_pil.convert('RGB')
     
-    images_to_display = []
-    if original_img_pil:
-        images_to_display.append(original_img_pil)
-    
-    # Add valid Grad-CAM images (which are numpy arrays)
-    for model_name, img_data in grad_cam_images_dict.items():
-        if isinstance(img_data, np.ndarray):
-            try:
-                # Convert OpenCV image (BGR) to PIL Image (RGB)
-                img_pil = Image.fromarray(cv2.cvtColor(img_data, cv2.COLOR_BGR2RGB))
-                images_to_display.append(img_pil)
-            except Exception as e:
-                print(f"Warning: Could not convert Grad-CAM image for {model_name} to PIL: {e}")
-        elif isinstance(img_data, Image.Image): # Should not happen if coming from overlay_heatmap
-            images_to_display.append(img_data)
+    img_width, img_height = original_image_pil.size
+    cell_width = img_width
+    cell_height = img_height
+
+    all_images_to_display = {
+        'Original Image': original_image_pil.resize((cell_width, cell_height))
+    }
+
+    # Add Grad-CAM images (unchanged logic)
+    for name, img_pil in grad_cam_images.items():
+        if isinstance(img_pil, Image.Image):
+            all_images_to_display[f'Grad-CAM ({name})'] = img_pil.resize((cell_width, cell_height))
         else:
-            print(f"Warning: Skipping unknown Grad-CAM data type for {model_name}: {type(img_data)}")
+            placeholder_img = Image.new('RGB', (cell_width, cell_height), color = (200, 200, 200))
+            draw = ImageDraw.Draw(placeholder_img)
+            text = f"{name} (No CAM)"
+            try:
+                font = ImageFont.truetype("arial.ttf", 20)
+            except IOError:
+                font = ImageFont.load_default()
+            # Use font.getbbox() instead of draw.textsize()
+            bbox = font.getbbox(text) # Corrected to use 'text' and 'font'
+            textwidth = bbox[2] - bbox[0]
+            textheight = bbox[3] - bbox[1]
+            x = (cell_width - textwidth) / 2
+            y = (cell_height - textheight) / 2
+            draw.text((x, y), text, fill=(0,0,0), font=font)
+            all_images_to_display[f'Grad-CAM ({name})'] = placeholder_img
 
-    num_images = len(images_to_display)
+    # <--- ADDED: Logic to include Feature visualizations
+    if feature_visualizations:
+        for name, img_pil in feature_visualizations.items():
+            if isinstance(img_pil, Image.Image):
+                all_images_to_display[f'{name} Features'] = img_pil.resize((cell_width, cell_height))
+            else:
+                placeholder_img = Image.new('RGB', (cell_width, cell_height), color = (200, 200, 200))
+                draw = ImageDraw.Draw(placeholder_img)
+                text = f"{name} Features (No Viz)"
+                try:
+                    font = ImageFont.truetype("arial.ttf", 20)
+                except IOError:
+                    font = ImageFont.load_default()
+                bbox = font.getbbox(text) # Corrected to use 'text' and 'font'
+                textwidth = bbox[2] - bbox[0]
+                textheight = bbox[3] - bbox[1]
+                x = (cell_width - textwidth) / 2
+                y = (cell_height - textheight) / 2
+                draw.text((x, y), text, fill=(0,0,0), font=font)
+                all_images_to_display[f'{name} Features'] = placeholder_img
 
+    num_images = len(all_images_to_display)
     if num_images == 0:
-        print("Warning: No images to display in grid.")
-        return Image.new('RGB', thumbnail_size, 'grey') # Return a placeholder
-    if num_images == 1:
-        # If only one image (e.g., original only, or one failed gradcam), return it directly
-        return images_to_display[0].resize(thumbnail_size, Image.LANCZOS)
+        return Image.new('RGB', (cell_width, cell_height), color = 'white')
 
-    # Create a more compact grid layout - horizontal row if 3 or fewer images
-    if num_images <= 3:
-        cols = num_images
-        rows = 1
-    else:
-        # Otherwise aim for a square-ish grid
-        cols = int(np.ceil(np.sqrt(num_images)))
-        rows = int(np.ceil(num_images / cols))
+    if grid_size is None or grid_size[0] * grid_size[1] < num_images:
+        cols = max(3, min(4, num_images))
+        rows = (num_images + cols - 1) // cols
+        grid_size = (rows, cols)
 
-    # Calculate grid canvas size including padding
-    grid_width = cols * thumbnail_size[0] + (cols + 1) * padding
-    grid_height = rows * thumbnail_size[1] + (rows + 1) * padding
+    grid_rows, grid_cols = grid_size
     
-    # Create a new canvas with a dark blue background (matches mammogram style)
-    grid_canvas = Image.new('RGB', (grid_width, grid_height), (0, 0, 40)) # Dark blue background
+    final_grid_width = cell_width * grid_cols
+    final_grid_height = cell_height * grid_rows + grid_rows * 30 # Add space for titles
+
+    final_grid_image = Image.new('RGB', (final_grid_width, final_grid_height), color='white')
+    draw = ImageDraw.Draw(final_grid_image)
+
+    try:
+        font = ImageFont.truetype("arial.ttf", 20)
+    except IOError:
+        font = ImageFont.load_default()
+
+    x_offset = 0
+    y_offset = 0
+    img_counter = 0
+
+    ordered_images = list(all_images_to_display.items())
     
-    # Place images in a left-to-right, top-to-bottom order
-    current_img_idx = 0
-    for r in range(rows):
-        for c in range(cols):
-            if current_img_idx < num_images:
-                img_pil = images_to_display[current_img_idx]
-                
-                # Resize image to thumbnail
-                img_pil_resized = img_pil.resize(thumbnail_size, Image.LANCZOS)
-                
-                # Calculate position with padding
-                x_offset = padding + c * (thumbnail_size[0] + padding)
-                y_offset = padding + r * (thumbnail_size[1] + padding)
-                
-                grid_canvas.paste(img_pil_resized, (x_offset, y_offset))
-                current_img_idx += 1
-            
-    return grid_canvas
+    for title, img_pil in ordered_images:
+        row = img_counter // grid_cols
+        col = img_counter % grid_cols
+
+        current_x = col * cell_width
+        current_y = row * (cell_height + 30)
+
+        final_grid_image.paste(img_pil, (current_x, current_y))
+
+        bbox = font.getbbox(title) # Corrected to use 'title' and 'font'
+        textwidth = bbox[2] - bbox[0]
+        textheight = bbox[3] - bbox[1]
+        text_x = current_x + (cell_width - textwidth) // 2
+        text_y = current_y + cell_height + 5
+        draw.text((text_x, text_y), title, fill=(0, 0, 0), font=font)
+        
+        img_counter += 1
+
+    return final_grid_image
 
 def predict_image(img_path):
-    """Runs prediction using the ensemble of image models."""
+    """
+    Runs prediction using the ensemble of image models, generates a comprehensive
+    visualization grid, and calculates validation metrics if a true label is present.
+    
+    Returns:
+        original_img_pil (PIL.Image): The original image.
+        grid_img_pil (PIL.Image): The visualization grid image.
+        result_text (str): The ensemble prediction text.
+        ensemble_pred_prob (float): The ensemble prediction probability.
+        predictions (dict): Dictionary of individual model probabilities.
+        validation_metrics (dict): Dictionary of performance and trustability metrics.
+    """
     if not models:
         messagebox.showerror("Error", "Models are not loaded.")
-        return None, None, None, None, {} # Return empty dict for predictions
+        return None, None, "Error: Models not loaded", None, {}, {} # Return empty dict for predictions and validation
 
     original_img_pil = Image.open(img_path).convert('RGB')
     original_img_cv = cv2.cvtColor(np.array(original_img_pil), cv2.COLOR_RGB2BGR) # Keep for overlay
 
-    predictions = {}
+    predictions = {} # Stores probabilities for each model
     processed_data = {} # Store preprocessed data
-    grad_cam_results = {} # Store Grad-CAM results for each model
+    grad_cam_results = {} # Store Grad-CAM results for each applicable model
+    feature_visualizations = {} # Store feature visualizations (HOG, LBP, SIFT)
 
-    # --- Preprocess Image Data ---
-    # Generate all necessary inputs
+    # --- Preprocess Image Data and Capture Visualizations ---
     processed_data['ResNet'] = preprocess_image_resnet(img_path)
-    processed_data['HOG'] = extract_hog_features(img_path)
-    processed_data['LBP'] = extract_lbp_features(img_path)
-    processed_data['SIFT'] = extract_sift_features(img_path)
+    
+    hog_input, hog_viz = extract_hog_features(img_path)
+    processed_data['HOG'] = hog_input
+    if hog_viz: feature_visualizations['HOG'] = hog_viz
+
+    lbp_input, lbp_viz = extract_lbp_features(img_path)
+    processed_data['LBP'] = lbp_input
+    if lbp_viz: feature_visualizations['LBP'] = lbp_viz
+
+    sift_input, sift_viz = extract_sift_features(img_path)
+    processed_data['SIFT'] = sift_input
+    if sift_viz: feature_visualizations['SIFT'] = sift_viz
 
     # Check if ResNet preprocessing failed (needed for Grad-CAM)
     if processed_data['ResNet'] is None:
-         messagebox.showwarning("Warning", "Failed to preprocess image for ResNet/Grad-CAM.")
-         # Allow continuing, but Grad-CAM might fail
+        messagebox.showwarning("Warning", "Failed to preprocess image for ResNet/Grad-CAM.")
+        # Allow continuing, but Grad-CAM might fail
 
     # --- Run Predictions ---
     for name, model in models.items():
-        if model is None:
-            predictions[name] = None # Skip if model failed to load
+        if model is None or name == 'sift_kmeans_model': # Skip KMeans model from direct prediction
+            predictions[name] = None # Skip if model failed to load or is not a prediction model
             continue
 
         data = None
@@ -608,7 +694,7 @@ def predict_image(img_path):
             data = processed_data['HOG']
         elif 'LBP' in name:
             data = processed_data['LBP']
-        elif 'Sift' in name:
+        elif 'Sift' in name: # This handles Sift models (e.g., Sift_model.h5)
             data = processed_data['SIFT']
 
         # Check if data is available for this model type
@@ -620,55 +706,51 @@ def predict_image(img_path):
         try:
             # Predict using the selected data
             pred = model.predict(data)[0] # Assuming batch size 1
-            # Assuming output is probability for class 1 (Cancer)
-            # Adjust index if needed (e.g., pred[1] or np.argmax(pred))
-            # Check if output is single value (binary) or multi-value (softmax)
+            
             if len(pred) == 1:
-                predictions[name] = pred[0] # Assume single output is P(Cancer)
+                predictions[name] = float(pred[0]) # Assume single output is P(Cancer)
             elif len(pred) > 1:
-                 # Assuming index 1 corresponds to the 'Cancer' class probability
-                 predictions[name] = pred[1]
+                predictions[name] = float(pred[1]) # Assuming index 1 corresponds to the 'Cancer' class probability
             else:
-                 print(f"Warning: Unexpected prediction output shape for {name}: {pred.shape}")
-                 predictions[name] = None # Cannot interpret
+                print(f"Warning: Unexpected prediction output shape for {name}: {pred.shape}")
+                predictions[name] = None # Cannot interpret
 
             if predictions[name] is not None:
                 print(f"{name} prediction: {predictions[name]:.4f}")
                 
-                # Generate Grad-CAM for this model
-                try:
-                    if hasattr(model, 'layers') and model.layers:
-                        last_conv_layer_name = find_last_conv_layer(model)
-                        if last_conv_layer_name:
-                            # Check if the layer actually exists in the model
-                            try:
-                                model.get_layer(last_conv_layer_name) # Verify layer exists
-                                heatmap = get_grad_cam(model, data, last_conv_layer_name)
-                                if heatmap is not None:
-                                    # Resize heatmap to match original image dimensions
-                                    heatmap_resized = cv2.resize(heatmap, (original_img_cv.shape[1], original_img_cv.shape[0]))
-                                    # Convert heatmap to RGB format
-                                    heatmap_colored = cv2.applyColorMap(np.uint8(255 * heatmap_resized), cv2.COLORMAP_JET)
-                                    # Overlay heatmap on original image
-                                    alpha = 0.4  # Transparency factor
-                                    overlay = cv2.addWeighted(original_img_cv, 1 - alpha, heatmap_colored, alpha, 0)
-                                    # Store the result
-                                    grad_cam_results[name] = overlay
-                                    print(f"Generated Grad-CAM for {name}")
-                            except Exception as e:
-                                print(f"Error generating Grad-CAM for {name}: {e}")
-                except Exception as e:
-                    print(f"Error during Grad-CAM generation for {name}: {e}")
+                # Generate Grad-CAM for ResNet models only
+                if 'ResNet' in name:
+                    try:
+                        if hasattr(model, 'layers') and model.layers:
+                            last_conv_layer_name = find_last_conv_layer(model)
+                            if last_conv_layer_name:
+                                try:
+                                    model.get_layer(last_conv_layer_name) # Verify layer exists
+                                    heatmap = get_grad_cam(model, data, last_conv_layer_name)
+                                    if heatmap is not None:
+                                        # Resize heatmap to match original image dimensions
+                                        heatmap_resized = cv2.resize(heatmap, (original_img_cv.shape[1], original_img_cv.shape[0]))
+                                        # Convert heatmap to RGB format
+                                        heatmap_colored = cv2.applyColorMap(np.uint8(255 * heatmap_resized), cv2.COLORMAP_JET)
+                                        # Overlay heatmap on original image
+                                        alpha = 0.4   # Transparency factor
+                                        overlay = cv2.addWeighted(original_img_cv, 1 - alpha, heatmap_colored, alpha, 0)
+                                        
+                                        # Store the result (convert from BGR to RGB PIL Image)
+                                        grad_cam_results[name] = Image.fromarray(cv2.cvtColor(overlay, cv2.COLOR_BGR2RGB))
+                                        print(f"Generated Grad-CAM for {name}")
+                                except Exception as e:
+                                    print(f"Error generating Grad-CAM for {name} (layer issues or get_grad_cam): {e}")
+                    except Exception as e:
+                        print(f"Error during Grad-CAM setup for {name}: {e}")
             else:
-                 print(f"{name} prediction could not be interpreted.")
+                print(f"{name} prediction could not be interpreted.")
 
         except ValueError as ve:
-             # Catch potential shape mismatches specifically
-             print(f"Error during prediction for {name} (Potential Shape Mismatch): {ve}")
-             print(f"Model expected input shape: {model.input_shape}, Data shape provided: {data.shape}")
-             predictions[name] = None
+            print(f"Error during prediction for {name} (Potential Shape Mismatch): {ve}")
+            print(f"Model expected input shape: {model.input_shape}, Data shape provided: {data.shape}")
+            predictions[name] = None
         except Exception as e:
-            # Catch other prediction errors
             print(f"Error during prediction for {name}: {e}")
             predictions[name] = None
 
@@ -676,82 +758,93 @@ def predict_image(img_path):
     valid_preds = [p for p in predictions.values() if p is not None]
     if not valid_preds:
         messagebox.showerror("Error", "No models could produce a valid prediction.")
-        # Return structure expected by caller
-        return original_img_pil, None, "Error: No valid predictions", None, predictions # Return current predictions dict
+        return original_img_pil, None, "Error: No valid predictions", None, predictions, {} # Return empty validation
 
     ensemble_pred_prob = np.mean(valid_preds)
-    final_prediction = "Cancer Detected" if ensemble_pred_prob > 0.5 else "Normal"
+    final_prediction = "Malignant" if ensemble_pred_prob > 0.5 else "Benign"
     result_text = f"{final_prediction} (Avg Prob: {ensemble_pred_prob:.3f})"
     print(f"\nEnsemble Probability (Avg): {ensemble_pred_prob:.4f}")
     print(f"Final Prediction: {final_prediction}")
 
-    # Create a comprehensive visualization with all predictions and Grad-CAMs
-    # Group models by type (HOG, LBP, SIFT, ResNet)
-    model_groups = {
-        'HOG': ['Hog', 'HogAHE', 'HogN'],
-        'LBP': ['LBP', 'LBPAHE', 'LBPN'],
-        'SIFT': ['Sift', 'SiftAHE', 'SiftN'],
-        'ResNet': ['ResNet', 'ResNetAHE', 'ResNetN']
-    }
+    # --- Calculate Validation Metrics (New) ---
+    validation_metrics = calculate_validation_metrics(predictions, img_path)
+    print("\nValidation Metrics:")
+    print(validation_metrics)
+
+    # --- Create a Comprehensive Visualization Grid ---
+    all_visualizations_for_grid = {}
     
-    # Create a detailed results dictionary with predictions and visualization
-    detailed_results = {}
-    for group, model_names in model_groups.items():
-        detailed_results[group] = {}
-        for name in model_names:
-            if name in predictions and predictions[name] is not None:
-                pred_value = predictions[name]
-                pred_class = "Cancer" if pred_value > 0.5 else "Normal"
-                detailed_results[group][name] = {
-                    'probability': pred_value,
-                    'prediction': pred_class,
-                    'grad_cam': grad_cam_results.get(name)
-                }
+    # Add original image
+    all_visualizations_for_grid['Original Image'] = original_img_pil.resize(FEATURE_IMG_SIZE)
+
+    # Add Feature Visualizations
+    for name, viz_img in feature_visualizations.items():
+        all_visualizations_for_grid[f'{name} Features'] = viz_img.resize(FEATURE_IMG_SIZE)
+
+    # Add Grad-CAM Visualizations
+    for model_name, cam_image_pil in grad_cam_results.items():
+        if cam_image_pil is not None:
+            all_visualizations_for_grid[f'{model_name} Grad-CAM'] = cam_image_pil.resize(FEATURE_IMG_SIZE)
+        else:
+            # Placeholder for failed Grad-CAM
+            placeholder_img = Image.new('RGB', FEATURE_IMG_SIZE, color = (200, 200, 200))
+            draw = ImageDraw.Draw(placeholder_img)
+            try:
+                font = ImageFont.truetype("arial.ttf", 20)
+            except IOError:
+                font = ImageFont.load_default()
+            text = f"{model_name} (No CAM)"
+            bbox = font.getbbox(text)
+            textwidth = bbox[2] - bbox[0]
+            textheight = bbox[3] - bbox[1]
+            x = (FEATURE_IMG_SIZE[0] - textwidth) / 2
+            y = (FEATURE_IMG_SIZE[1] - textheight) / 2
+            draw.text((x, y), text, fill=(0,0,0), font=font)
+            all_visualizations_for_grid[f'{model_name} Grad-CAM'] = placeholder_img
+
+    num_images = len(all_visualizations_for_grid)
+    if num_images == 0:
+        grid_img_pil = Image.new('RGB', (FEATURE_IMG_SIZE[0], FEATURE_IMG_SIZE[1]), color='white')
+        return original_img_pil, grid_img_pil, result_text, ensemble_pred_prob, predictions, validation_metrics
+
+    # Determine grid dimensions dynamically
+    grid_cols = max(1, min(4, num_images)) # Up to 4 columns, adjust as needed
+    grid_rows = (num_images + grid_cols - 1) // grid_cols
     
-    # Create a visualization grid
-    # Get the size of the original image
-    h, w = original_img_cv.shape[:2]
+    final_grid_width = FEATURE_IMG_SIZE[0] * grid_cols
+    final_grid_height = FEATURE_IMG_SIZE[1] * grid_rows + grid_rows * 30 # Add space for titles
+
+    grid_img_pil = Image.new('RGB', (final_grid_width, final_grid_height), color='white')
+    draw = ImageDraw.Draw(grid_img_pil)
+
+    try:
+        font = ImageFont.truetype("arial.ttf", 20)
+    except IOError:
+        font = ImageFont.load_default()
+
+    img_counter = 0
+    # Sort images for consistent display order
+    ordered_image_items = sorted(all_visualizations_for_grid.items())
     
-    # We'll create a 4x3 grid (4 model types x 3 variants)
-    grid_h = h * 4  # 4 rows for HOG, LBP, SIFT, ResNet
-    grid_w = w * 3  # 3 columns for original, AHE, N variants
-    grid_img = np.zeros((grid_h, grid_w, 3), dtype=np.uint8)
-    
-    # Add each Grad-CAM result to the grid
-    row_idx = 0
-    for group, models_dict in detailed_results.items():
-        col_idx = 0
-        for name, info in models_dict.items():
-            # Calculate position in grid
-            y_start = row_idx * h
-            y_end = y_start + h
-            x_start = col_idx * w
-            x_end = x_start + w
+    for title, img_pil in ordered_image_items:
+        row = img_counter // grid_cols
+        col = img_counter % grid_cols
+
+        current_x = col * FEATURE_IMG_SIZE[0]
+        current_y = row * (FEATURE_IMG_SIZE[1] + 30) # 30 for title space
+
+        grid_img_pil.paste(img_pil, (current_x, current_y))
+
+        bbox = font.getbbox(title) # Corrected to use 'title' and 'font'
+        textwidth = bbox[2] - bbox[0]
+        textheight = bbox[3] - bbox[1]
+        text_x = current_x + (FEATURE_IMG_SIZE[0] - textwidth) // 2
+        text_y = current_y + FEATURE_IMG_SIZE[1] + 5
+        draw.text((text_x, text_y), title, fill=(0, 0, 0), font=font)
+        
+        img_counter += 1
             
-            if 'grad_cam' in info and info['grad_cam'] is not None:
-                # Add the overlay to the grid
-                grid_img[y_start:y_end, x_start:x_end] = info['grad_cam']
-            else:
-                # If Grad-CAM failed, use the original image with a text overlay
-                # indicating the prediction but no Grad-CAM
-                grid_img[y_start:y_end, x_start:x_end] = original_img_cv.copy()
-                cv2.putText(grid_img[y_start:y_end, x_start:x_end], 
-                           "No Grad-CAM", (10, 30), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-            
-            # Add model name and prediction as text
-            text = f"{name}: {info['prediction']} ({info['probability']:.3f})"
-            cv2.putText(grid_img[y_start:y_end, x_start:x_end], text, (x_start + 10 - x_start, y_start + 30 - y_start), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-            
-            col_idx += 1
-        row_idx += 1
-    
-    # Convert the grid to PIL format
-    grid_img_pil = Image.fromarray(cv2.cvtColor(grid_img, cv2.COLOR_BGR2RGB))
-    
-    # Return the original image, the grid of visualizations, the result text, and the ensemble probability
-    return original_img_pil, grid_img_pil, result_text, ensemble_pred_prob, predictions
+    return original_img_pil, grid_img_pil, result_text, ensemble_pred_prob, predictions, validation_metrics
 
 
 class App:
@@ -781,92 +874,65 @@ class App:
         self.result_label = tk.Label(root, text="Load an image and click Predict", font=("Arial", 14), justify=tk.LEFT)
         self.result_label.pack(pady=10)
 
-        # Frame for images
-        self.image_frame = tk.Frame(root)
-        self.image_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        # Frame for images and metrics
+        self.main_content_frame = tk.Frame(root)
+        self.main_content_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        
+        # Configure grid for main_content_frame: 2 columns, 1 row for images, 1 row for metrics
+        self.main_content_frame.columnconfigure(0, weight=1) # Original Image
+        self.main_content_frame.columnconfigure(1, weight=3) # Visualization Grid
+        self.main_content_frame.rowconfigure(0, weight=3) # Images
+        self.main_content_frame.rowconfigure(1, weight=1) # Metrics
 
-        # Configure grid layout
-        self.image_frame.columnconfigure(0, weight=1)
-        self.image_frame.columnconfigure(1, weight=3)  # Give more space to visualization grid
-        self.image_frame.rowconfigure(0, weight=1)
-        self.image_frame.rowconfigure(1, weight=10)
+        # Original image section
+        tk.Label(self.main_content_frame, text="Original Image").grid(row=0, column=0, pady=2, sticky="n")
+        self.input_canvas = tk.Canvas(self.main_content_frame, bg='lightgrey')
+        self.input_canvas.grid(row=0, column=0, sticky="nsew", padx=5)
 
-        # Original image
-        tk.Label(self.image_frame, text="Original Image").grid(row=0, column=0, pady=2)
-        self.input_canvas = tk.Canvas(self.image_frame, bg='lightgrey')
-        self.input_canvas.grid(row=1, column=0, sticky="nsew", padx=5)
+        # Comprehensive visualization grid section
+        tk.Label(self.main_content_frame, text="All Model Predictions with Grad-CAM").grid(row=0, column=1, pady=2, sticky="n")
+        self.output_canvas = tk.Canvas(self.main_content_frame, bg='lightgrey')
+        self.output_canvas.grid(row=0, column=1, sticky="nsew", padx=5)
 
-        # Comprehensive visualization grid
-        tk.Label(self.image_frame, text="All Model Predictions with Grad-CAM").grid(row=0, column=1, pady=2)
-        self.output_canvas = tk.Canvas(self.image_frame, bg='lightgrey')
-        self.output_canvas.grid(row=1, column=1, sticky="nsew", padx=5)
-
-        # Add a scrollbar for the visualization grid
-        self.scrollbar_y = tk.Scrollbar(self.image_frame, orient="vertical", command=self.output_canvas.yview)
-        self.scrollbar_y.grid(row=1, column=2, sticky="ns")
+        # Add scrollbars for the visualization grid
+        self.scrollbar_y = tk.Scrollbar(self.output_canvas, orient="vertical", command=self.output_canvas.yview)
+        self.scrollbar_y.pack(side=tk.RIGHT, fill=tk.Y)
         self.output_canvas.configure(yscrollcommand=self.scrollbar_y.set)
 
-        self.scrollbar_x = tk.Scrollbar(self.image_frame, orient="horizontal", command=self.output_canvas.xview)
-        self.scrollbar_x.grid(row=2, column=1, sticky="ew")
+        self.scrollbar_x = tk.Scrollbar(self.output_canvas, orient="horizontal", command=self.output_canvas.xview)
+        self.scrollbar_x.pack(side=tk.BOTTOM, fill=tk.X)
         self.output_canvas.configure(xscrollcommand=self.scrollbar_x.set)
+
+        # Metrics display area (new)
+        self.metrics_frame = tk.LabelFrame(self.main_content_frame, text="Performance and Trustability Metrics")
+        self.metrics_frame.grid(row=1, column=0, columnspan=2, sticky="nsew", padx=5, pady=10)
+        self.metrics_frame.grid_rowconfigure(0, weight=1)
+        self.metrics_frame.grid_columnconfigure(0, weight=1)
+
+        self.metrics_text = tk.Text(self.metrics_frame, wrap=tk.WORD, state=tk.DISABLED, font=("Arial", 10))
+        self.metrics_text.grid(row=0, column=0, sticky="nsew")
+
+        self.metrics_scrollbar_y = tk.Scrollbar(self.metrics_frame, orient="vertical", command=self.metrics_text.yview)
+        self.metrics_scrollbar_y.grid(row=0, column=1, sticky="ns")
+        self.metrics_text.config(yscrollcommand=self.metrics_scrollbar_y.set)
 
         # Initialize variables
         self.input_img_path = None
         self.gene_data_path = None
         self.input_img_display = None
         self.output_img_display = None
+        self.input_img_pil = None
+        self.output_img_pil = None
 
         # Bind resize event
-        self.input_canvas.bind("<Configure>", self.resize_image)
-        self.output_canvas.bind("<Configure>", self.resize_image)
+        self.input_canvas.bind("<Configure>", lambda event: self.resize_image(event, self.input_canvas))
+        self.output_canvas.bind("<Configure>", lambda event: self.resize_image(event, self.output_canvas))
+        self.output_canvas.bind("<Configure>", self.on_output_canvas_configure) # For scrollable region
 
-    def run_prediction(self):
-        """Runs prediction on the loaded image."""
-        if not self.input_img_path:
-            messagebox.showerror("Error", "Please load an image first.")
-            return
-
-        # Clear previous results
-        self.result_label.config(text="Running prediction...")
-        # Clear canvases if they exist and have content
-        if hasattr(self, 'input_canvas_image_id') and self.input_canvas_image_id:
-            self.input_canvas.delete(self.input_canvas_image_id)
-            self.input_canvas_image_id = None
-        if hasattr(self, 'output_canvas_image_id') and self.output_canvas_image_id:
-            self.output_canvas.delete(self.output_canvas_image_id)
-            self.output_canvas_image_id = None
-        if hasattr(self, 'predictions_text_id') and self.predictions_text_id:
-            self.predictions_canvas.delete(self.predictions_text_id)
-            self.predictions_text_id = None
-            # Clear the canvas background as well
-            self.predictions_canvas.create_rectangle(0, 0, self.predictions_canvas.winfo_width(), self.predictions_canvas.winfo_height(), fill="white", outline="white")
-
-        self.root.update()  # Update UI to show "Running prediction..."
-
-        try:
-            # Run prediction
-            # Correctly unpack all 5 values returned by predict_image
-            original_img_pil, grid_img_pil, result_text, ensemble_pred_prob, predictions_dict = predict_image(self.input_img_path)
-            
-            # Update result text
-            self.result_label.config(text=result_text)
-            
-            # Display original image
-            if original_img:
-                self.display_image(original_img, self.input_canvas, keep_aspect=True)
-            
-            # Display visualization grid
-            if visualization_grid:
-                self.display_image(visualization_grid, self.output_canvas, keep_aspect=True)
-            
-            # Display individual model predictions (New)
-            if model_predictions:
-                self.display_model_predictions(model_predictions, ensemble_prob)
-
-        except Exception as e:
-            print(f"Prediction exception: {e}")
-            self.result_label.config(text=f"Error: {e}")
-            messagebox.showerror("Error", f"An error occurred during prediction: {e}")
+    def on_output_canvas_configure(self, event):
+        # Update the scrollregion to encompass the entire content
+        if self.output_img_pil:
+            self.output_canvas.config(scrollregion=self.output_canvas.bbox(tk.ALL))
 
 
     def load_image(self):
@@ -874,18 +940,16 @@ class App:
         if path:
             self.input_img_path = path
             self.display_image(self.input_canvas, self.input_img_path)
-            # Clear previous output
+            # Clear previous output and metrics
             self.output_canvas.delete("all")
             self.output_img_display = None
-            # Don't reset gene path here, allow separate loading
-            # self.gene_data_path = None
-            # self.gene_file_label.config(text="No gene data loaded.")
+            self.metrics_text.config(state=tk.NORMAL)
+            self.metrics_text.delete(1.0, tk.END)
+            self.metrics_text.config(state=tk.DISABLED)
             self.result_label.config(text="Image loaded. Click Predict.")
             self.predict_button.config(state=tk.NORMAL) # Enable predict once image is loaded
 
-    # Added Method to Load Gene Data
     def load_gene_data(self):
-        # Expecting a single row CSV or TSV with gene names as columns
         path = filedialog.askopenfilename(filetypes=[("Gene Data", "*.csv *.tsv *.txt")])
         if path:
             if not all(gene_pipeline.values()):
@@ -895,7 +959,6 @@ class App:
             else:
                 self.gene_data_path = path
                 self.gene_file_label.config(text=f"Gene Data: {os.path.basename(path)}")
-                # Update result label if prediction already ran
                 if "Result:" in self.result_label.cget("text"):
                      self.result_label.config(text="Gene data loaded. Click Predict again to include.")
         else:
@@ -973,33 +1036,82 @@ class App:
             self.input_img_display = img_tk
         elif canvas == self.output_canvas:
             self.output_img_display = img_tk
+            # Update scroll region for output canvas
+            self.output_canvas.config(scrollregion=(0, 0, img_resized.width, img_resized.height))
 
 
     def run_prediction(self):
+        """Runs prediction on the loaded image and displays results and validation metrics."""
         if not self.input_img_path:
             messagebox.showwarning("Warning", "Please load an image first.")
             return
 
         self.result_label.config(text="Predicting...")
-        self.root.update_idletasks() # Update GUI to show "Predicting..."
+        self.metrics_text.config(state=tk.NORMAL)
+        self.metrics_text.delete(1.0, tk.END)
+        self.metrics_text.insert(tk.END, "Calculating metrics...\n")
+        self.metrics_text.config(state=tk.DISABLED)
+        self.root.update_idletasks() 
 
         try:
-            # Correctly unpack all 5 values returned by predict_image
-            original_img_pil, grid_img_pil, result_text, ensemble_pred_prob, predictions_dict = predict_image(self.input_img_path)
+            # Updated to receive validation_metrics
+            original_img_pil, grid_img_pil, result_text, ensemble_pred_prob, predictions_dict, validation_metrics = predict_image(self.input_img_path)
 
             if result_text: # Check if prediction was successful
-                 self.display_image(self.input_canvas, original_img_pil) # Use original_img_pil for input display
-                 self.display_image(self.output_canvas, grid_img_pil)    # Use grid_img_pil for output display
-                 self.result_label.config(text=f"Result: {result_text}")
-                 # You can now also use ensemble_pred_prob and predictions_dict if needed for the GUI
+                self.display_image(self.input_canvas, original_img_pil) # Use original_img_pil for input display
+                self.display_image(self.output_canvas, grid_img_pil)    # Use grid_img_pil for output display
+                self.result_label.config(text=f"Result: {result_text}")
+                
+                # Display individual model predictions and validation metrics
+                self.metrics_text.config(state=tk.NORMAL)
+                self.metrics_text.delete(1.0, tk.END)
+                self.metrics_text.insert(tk.END, "--- Individual Model Predictions ---\n")
+                for model_name, prob in predictions_dict.items():
+                    if prob is not None:
+                        self.metrics_text.insert(tk.END, f"{model_name}: Probability = {prob:.4f}\n")
+                    else:
+                        self.metrics_text.insert(tk.END, f"{model_name}: No prediction\n")
+
+                self.metrics_text.insert(tk.END, "\n--- Ensemble Model ---\n")
+                self.metrics_text.insert(tk.END, f"Ensemble Probability: {ensemble_pred_prob:.4f}\n")
+                self.metrics_text.insert(tk.END, f"Final Ensemble Prediction: {'Malignant' if ensemble_pred_prob > 0.5 else 'Benign'}\n")
+
+                self.metrics_text.insert(tk.END, "\n--- Validation Metrics ---\n")
+                if validation_metrics["true_label_found"]:
+                    self.metrics_text.insert(tk.END, f"True Label Found in Filename: {validation_metrics['true_label']} ({'Malignant' if validation_metrics['true_label'] == 1 else 'Benign'})\n\n")
+                    
+                    self.metrics_text.insert(tk.END, "Performance Metrics (vs. True Label):\n")
+                    for model_name, perf_metrics in validation_metrics["performance"].items():
+                        self.metrics_text.insert(tk.END, f"  {model_name}:\n")
+                        for metric, value in perf_metrics.items():
+                            self.metrics_text.insert(tk.END, f"    {metric.replace('_', ' ').title()}: {value:.4f}\n")
+                    
+                    self.metrics_text.insert(tk.END, "\nTrustability Metrics:\n")
+                    for model_name, trust_metrics in validation_metrics["trustability"].items():
+                        self.metrics_text.insert(tk.END, f"  {model_name}:\n")
+                        self.metrics_text.insert(tk.END, f"    Predicted Class: {trust_metrics['predicted_class']} ({'Malignant' if trust_metrics['predicted_class'] == 1 else 'Benign'})\n")
+                        self.metrics_text.insert(tk.END, f"    Is Correct: {trust_metrics['is_correct']}\n")
+                        self.metrics_text.insert(tk.END, f"    Trust Score: {trust_metrics['trust_score']}\n")
+                else:
+                    self.metrics_text.insert(tk.END, "No true label found in filename. Cannot calculate performance and trustability metrics.\n")
+                
+                self.metrics_text.config(state=tk.DISABLED)
+
             else:
-                 # Error occurred during prediction, message already shown by predict_image
-                 self.result_label.config(text="Prediction failed. Check console for errors.")
-                 self.output_canvas.delete("all") # Clear output canvas on error
+                self.result_label.config(text="Prediction failed. Check console for errors.")
+                self.output_canvas.delete("all") # Clear output canvas on error
+                self.metrics_text.config(state=tk.NORMAL)
+                self.metrics_text.delete(1.0, tk.END)
+                self.metrics_text.insert(tk.END, "Prediction failed. No metrics available.\n")
+                self.metrics_text.config(state=tk.DISABLED)
 
         except Exception as e:
             messagebox.showerror("Error", f"An error occurred during prediction: {e}")
             self.result_label.config(text="Prediction failed.")
+            self.metrics_text.config(state=tk.NORMAL)
+            self.metrics_text.delete(1.0, tk.END)
+            self.metrics_text.insert(tk.END, f"Error during prediction: {e}\n")
+            self.metrics_text.config(state=tk.DISABLED)
             print(f"Prediction exception: {e}")
 
 

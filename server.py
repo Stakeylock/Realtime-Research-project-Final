@@ -12,9 +12,7 @@ from threading import Timer
 import inference_app
 import llm_utils 
 import db_utils
-import sqlite3 # Make sure this is imported if not already in db_utils
-
-# Import WeasyPrint (after installing it: pip install weasyprint)
+import sqlite3
 from weasyprint import HTML
 
 app = Flask(__name__)
@@ -48,6 +46,7 @@ else:
     print("Models loaded successfully.")
 
 def convert_pil_to_base64(pil_image):
+    """Converts a PIL Image object to a base64 encoded string."""
     if pil_image is None:
         return None
     buffered = io.BytesIO()
@@ -190,8 +189,9 @@ def predict_image_route():
             temp_img_path = os.path.join(temp_dir, file.filename)
             file.save(temp_img_path)
 
-            # Call the prediction function
-            original_img_pil, grid_img_pil, result_text, ensemble_prob, model_preds_dict = inference_app.predict_image(temp_img_path)
+            # Call the prediction function (now returns validation_metrics)
+            original_img_pil, grid_img_pil, result_text, ensemble_prob, model_preds_dict, validation_metrics = \
+                inference_app.predict_image(temp_img_path)
 
             # Clean up the temporary file
             if os.path.exists(temp_img_path):
@@ -244,7 +244,8 @@ def predict_image_route():
                 'model_predictions': serializable_model_preds,
                 'original_image_base64': original_b64,
                 'visualization_image_base64': visualization_b64,
-                'patient_id': patient_id
+                'patient_id': patient_id,
+                'validation_metrics': validation_metrics # Include validation metrics in response
             }
             return jsonify(response_data)
 
@@ -256,6 +257,47 @@ def predict_image_route():
 
     return jsonify({'error': 'File processing failed'}), 500
 
+@app.route('/validate', methods=['POST'])
+def validate():
+    """
+    Receives an image, performs prediction, and then validates the predictions
+    against a label in the filename, returning performance and trustability metrics.
+    """
+    if 'mammogram' not in request.files:
+        return jsonify({"error": "No mammogram file was provided."}), 400
+
+    file = request.files['mammogram']
+    if file.filename == '':
+        return jsonify({"error": "No file was selected."}), 400
+
+    try:
+        # Create a temporary directory for uploads if it doesn't exist
+        temp_dir = 'temp_uploads'
+        os.makedirs(temp_dir, exist_ok=True)
+        
+        # Save the file to a temporary location to get a stable filepath
+        filepath = os.path.join(temp_dir, file.filename)
+        file.save(filepath)
+
+        # Step 1: Get the standard predictions from the existing function.
+        # The predict_image function returns: original_img_pil, grid_img_pil, result_text, ensemble_pred_prob, predictions_dict, validation_metrics
+        _, _, _, _, predictions_dict, validation_metrics = inference_app.predict_image(filepath)
+
+        # Step 3: Combine the prediction and validation results into a single response.
+        response_data = {
+            "predictions": predictions_dict,
+            "validation": validation_metrics
+        }
+        
+        # Clean up the temporary file
+        os.remove(filepath)
+        
+        return jsonify(response_data)
+
+    except Exception as e:
+        app.logger.error(f"An error occurred during the validation process: {e}", exc_info=True)
+        return jsonify({"error": f"An internal server error occurred: {str(e)}"}), 500
+        
 @app.route('/predict_gene', methods=['POST'])
 def predict_gene_route():
     app.logger.info(f"--- /predict_gene route called ---")
@@ -413,7 +455,7 @@ def generate_report():
 
         # Generate the report using our LLM utility
         report_text = llm_utils.generate_medical_report(
-            patient_data_for_report, # Use the questionnaire data passed or fetched
+            patient_data_for_report,
             image_predictions_for_report,
             gene_predictions_for_report
         )

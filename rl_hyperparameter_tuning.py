@@ -6,7 +6,6 @@ from tensorflow.keras.models import load_model
 import joblib
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, f1_score
-# Replace gym imports with gymnasium
 import gymnasium as gym
 from gymnasium import spaces
 from stable_baselines3 import PPO
@@ -43,8 +42,6 @@ os.makedirs(RL_MODELS_DIR, exist_ok=True)
 def load_gene_data():
     logger.info("Loading gene expression data...")
     try:
-        # Load gene expression data
-        # This is a simplified approach - you may need to adjust based on your data format
         with open(GENE_DATA_FILE, 'r') as f:
             lines = f.readlines()
         
@@ -54,8 +51,7 @@ def load_gene_data():
             if line.startswith('!series_matrix_table_begin'):
                 data_start = i + 1
                 break
-        
-        # Extract header and data
+
         header = lines[data_start].strip().split('\t')
         data = []
         for line in lines[data_start+1:]:
@@ -66,24 +62,18 @@ def load_gene_data():
         # Convert to DataFrame
         df = pd.DataFrame(data, columns=header)
         
-        # Assuming the first column contains gene IDs and the rest are samples
         gene_ids = df.iloc[:, 0]
         expression_data = df.iloc[:, 1:].astype(float)
         
-        # Create labels (assuming binary classification - modify as needed)
-        # This is a placeholder - you'll need to adjust based on your actual labels
         labels = np.random.randint(0, 2, size=expression_data.shape[1])
         
         return expression_data.T, labels, gene_ids
     except Exception as e:
         logger.error(f"Error loading gene data: {e}")
         raise
-
-# Helper function to load image data
 def load_image_data(model_type):
     logger.info(f"Loading image data for {model_type}...")
     try:
-        # Determine the appropriate directory based on model type
         if 'Hog' in model_type:
             if 'AHE' in model_type:
                 img_dir = os.path.join(OUTPUT_FILES_DIR, 'HogAHE_Images')
@@ -266,15 +256,12 @@ class ImageModelTuningEnv(gym.Env):
         self.train_gen = train_gen
         self.val_gen = val_gen
         
-        # Define action and observation spaces
-        # Actions: learning_rate, batch_size, dropout_rate
         self.action_space = spaces.Box(
             low=np.array([1e-5, 8, 0.1]),
             high=np.array([1e-2, 64, 0.5]),
             dtype=np.float32
         )
         
-        # Observation space: current performance metrics (val_accuracy, val_loss)
         self.observation_space = spaces.Box(
             low=np.array([0, 0]),
             high=np.array([1, 10]),
@@ -545,7 +532,7 @@ def main():
     image_model_names = [
         "Hog_model", "HogAHE_model", "HogN_model",
         "LBP_model", "LBPAHE_model", "LBPN_model",
-        "Sift_model", "SiftAHE_model", "SiftN_model", # Assuming Sift models exist
+        "Sift_model", "SiftAHE_model", "SiftN_model", 
         "resnet_model", "resnetAHE_model", "resnetN_model"
     ]
     

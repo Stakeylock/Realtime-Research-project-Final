@@ -18,9 +18,8 @@ import base64
 from skimage import exposure
 from sklearn.metrics import f1_score, accuracy_score, precision_score, recall_score # Added for more metrics
 
-# --- Configuration ---
-MODEL_DIR = 'e:\\bcrrp\\models' # Ensure this path is correct for your environment
-# Image Model Paths
+MODEL_DIR = 'e:\\bcrrp\\models' 
+
 MODEL_PATHS = {
     'Hog': os.path.join(MODEL_DIR, 'Hog_model.h5'),
     'HogAHE': os.path.join(MODEL_DIR, 'HogAHE_model.h5'),
@@ -40,13 +39,10 @@ GENE_SCALER_PATH = os.path.join(MODEL_DIR, 'gene_expression_scaler.joblib')
 GENE_FEATURES_PATH = os.path.join(MODEL_DIR, 'gene_feature_names.joblib')
 SIFT_KMEANS_PATH = os.path.join(MODEL_DIR, 'sift_kmeans_model.joblib')
 
-# Image size used for ResNet models
 RESNET_IMG_SIZE = (224, 224)
-# Image size used for HOG/LBP/SIFT feature extraction (matches notebook)
 FEATURE_IMG_SIZE = (224, 224)
-# LBP parameters from notebook
 LBP_RADIUS = 3
-LBP_N_POINTS = 24 # P = 24 in notebook
+LBP_N_POINTS = 24
 
 sift_kmeans_model = None
 models = {} 
@@ -126,7 +122,6 @@ def load_all_models():
     try:
         if os.path.exists(SIFT_KMEANS_PATH):
             sift_kmeans_model = joblib.load(SIFT_KMEANS_PATH)
-            # Store SIFT KMeans model in the 'models' dictionary for consistency
             models['sift_kmeans_model'] = sift_kmeans_model
             print(f"Loaded SIFT KMeans model from {SIFT_KMEANS_PATH}")
         else:
@@ -136,17 +131,15 @@ def load_all_models():
         print(f"Error loading SIFT KMeans model: {e}")
         sift_kmeans_model = None
 
-    # Check if essential components are loaded
     if loaded_image_count == 0:
          messagebox.showerror("Error", "No image models could be loaded. Please check paths and model files.")
-         return False # Exit if no image models loaded
+         return False
 
     if loaded_gene_count < 3:
         messagebox.showwarning("Warning", "Could not load all gene pipeline components. Gene prediction will be disabled.")
 
     if sift_kmeans_model is None:
          messagebox.showwarning("Warning", "Could not load SIFT KMeans model. SIFT predictions might be disabled or incorrect.")
-         # Allow app to run, but SIFT won't work
 
     return True
 

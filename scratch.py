@@ -1,34 +1,44 @@
+import tensorflow as tf
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Conv2D, MaxPooling2D, Dropout, Flatten, Dense, Input
+from tensorflow.keras.metrics import Precision, Recall
+from tensorflow.keras.utils import plot_model # Import plot_model
 
-Python
+def create_modelCNN(input_shape=(224, 224, 3)):
+    model = Sequential()
+    model.add(Input(shape=input_shape))
+    model.add(Conv2D(32, (3, 3), activation='relu'))
+    model.add(MaxPooling2D(pool_size=(2, 2)))
 
+    model.add(Conv2D(64, (3, 3), activation='relu'))
+    model.add(MaxPooling2D(pool_size=(2, 2)))
 
-# Example snippet from inference_app.py (conceptual for gene data)
-import pandas as pd
-import joblib
-import os
+    model.add(Conv2D(128, (3, 3), activation='relu'))
+    model.add(MaxPooling2D(pool_size=(2, 2)))
 
-# Load persisted scaler and feature names
-GENE_SCALER_PATH = 'models/gene_expression_scaler.joblib'
-GENE_FEATURE_NAMES_PATH = 'models/gene_feature_names.joblib'
-GENE_MODEL_PATH = 'models/gene_expression_model.joblib' # Or gene_expression_model_tuned.joblib
+    model.add(Conv2D(256, (3, 3), activation='relu'))
+    model.add(MaxPooling2D(pool_size=(2, 2)))
 
-def predict_gene_expression_data(file_path):
-    if file_path.endswith('.csv'):
-        gene_df = pd.read_csv(file_path)
-    elif file_path.endswith('.tsv'):
-        gene_df = pd.read_csv(file_path, sep='\t')
-    else:
-        raise ValueError("Unsupported file format. Please upload CSV or TSV.")
+    model.add(Conv2D(512, (3, 3), activation='relu'))
+    model.add(MaxPooling2D(pool_size=(2, 2)))
 
-    scaler = joblib.load(GENE_SCALER_PATH)
-    feature_names = joblib.load(GENE_FEATURE_NAMES_PATH)
-    model = joblib.load(GENE_MODEL_PATH)
-    gene_df_aligned = gene_df[feature_names]
+    model.add(Flatten())
+    model.add(Dense(256, activation='relu'))
+    model.add(Dropout(0.5))
+    model.add(Dense(128, activation='relu'))
+    model.add(Dropout(0.5))
+    model.add(Dense(2, activation='softmax'))
 
-    scaled_gene_data = scaler.transform(gene_df_aligned)
+    model.compile(optimizer='adam',
+                  loss='categorical_crossentropy',
+                  metrics=['accuracy', Precision(name='precision'), Recall(name='recall')])
+    return model
 
-    # Predict class and probability
-    predicted_class = model.predict(scaled_gene_data)
-    prediction_probability = model.predict_proba(scaled_gene_data).tolist()
+# Create an instance of your model
+model = create_modelCNN()
 
-    return predicted_class, prediction_probability
+# Generate and save the model visualization
+plot_model(model, to_file='model_visualization.png', show_shapes=True, show_layer_names=True)
+
+print("Model visualization saved to model_visualization.png")
+print(model.summary())
